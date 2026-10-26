@@ -24,6 +24,7 @@ from pathlib import Path
 import requests
 
 from .pairing import Pairing
+from .power import on_charger
 from .ui import Progress, run_with_window
 
 HOME = Path.home() / "CarReview"
@@ -81,22 +82,6 @@ def be_gentle() -> None:
         torch.set_num_threads(3)
     except ImportError:
         pass
-
-
-def on_charger() -> bool:
-    """True when plugged in (or when power status can't be read, e.g. a desktop)."""
-    if sys.platform != "win32":
-        return True
-
-    class Status(ctypes.Structure):
-        _fields_ = [("ACLineStatus", ctypes.c_byte), ("BatteryFlag", ctypes.c_byte),
-                    ("BatteryLifePercent", ctypes.c_byte), ("SystemStatusFlag", ctypes.c_byte),
-                    ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
-
-    s = Status()
-    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
-        return True
-    return s.ACLineStatus != 0  # 0 = on battery, 1 = plugged in, 255 = unknown
 
 
 def wait_for_charger(progress: Progress | None = None, **status) -> None:
@@ -172,9 +157,9 @@ class Relay:
         return self.p.decrypt(name, r.content) if r.ok else None
 
 
-def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int) -> bytes:
+def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int, unvoiced: int = 0) -> bytes:
     """The list the phone downloads: clips named by their relay name, nothing else changed."""
-    out = dict(pack, cards=[], pending=pending)
+    out = dict(pack, cards=[], pending=pending, unvoiced=unvoiced)
     for c in cards:
         c = dict(c)
         c["q_audio"] = pairing.audio_name(c["q_audio"])
@@ -183,53 +168,122 @@ def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int) ->
     return json.dumps(out, separators=(",", ":")).encode()
 
 
+LOCK = HOME / "helper.lock"
+
+
+def pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        k32 = ctypes.windll.kernel32
+        k32.OpenProcess.restype = ctypes.c_void_p
+        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        k32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))
+        k32.CloseHandle(ctypes.c_void_p(handle))
+        return code.value == 259  # STILL_ACTIVE
+    import os
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def take_lock() -> bool:
+    """Only one send runs at a time. A later request just leaves a newer pack for it to pick up."""
+    import os
+
+    if LOCK.exists():
+        try:
+            if pid_alive(int(LOCK.read_text())):
+                return False
+        except ValueError:
+            pass
+    LOCK.write_text(str(os.getpid()))
+    return True
+
+
 def send(pack_path: Path, progress: Progress) -> None:
-    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    """Upload the car list. Voices missing cards first if the pack asks for it (and only while
+    plugged in); otherwise sends just the cards that already have audio. If a newer pack is
+    saved while this runs, it switches to the newer one."""
+    if not take_lock():
+        progress.finish("Another Car Review send is already running; it will pick up this newer list.")
+        return
     pairing = load_pairing()
     relay = Relay(pairing)
     voice = Voice()
     CACHE.mkdir(parents=True, exist_ok=True)
     be_gentle()
     keep_awake(True)
-    cards = pack["cards"]
     started = time.time()
-    progress.unit = "cards ready"
+    made = 0
     try:
         on_relay = relay.names("audio/")
-        ready: list[dict] = []
-        made = 0
-        for i, card in enumerate(cards):
-            if not progress.checkpoint():
-                break  # stopped by the user: the phone keeps the cards already sent
-            for fp, text in ((card["q_audio"], card["question"]), (card["a_audio"], card["answer"])):
-                path = CACHE / f"{fp}.mp3"
-                if not path.exists():
-                    wait_for_charger(progress, ready=len(ready), total=len(cards), made=made)
-                    path.write_bytes(voice.mp3(text))
-                    made += 1
-                name = pairing.audio_name(fp)
-                if name not in on_relay:
-                    relay.put(name, path.read_bytes())
-                    on_relay.add(name)
-            ready.append(card)
-            progress.step(len(ready), len(cards))
-            if len(ready) % BATCH == 0 or i == len(cards) - 1:
-                relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - len(ready)))
-                write_status(state="sending", ready=len(ready), total=len(cards), made=made,
-                             elapsed=int(time.time() - started), made_at=pack["made_at"])
-        if progress.stopped or not cards:
-            relay.put("list", phone_list(pack, ready, pairing, pending=0))
+        while True:
+            loaded_at = pack_path.stat().st_mtime
+            pack = json.loads(pack_path.read_text(encoding="utf-8"))
+            cards = pack["cards"]
+            voicing = pack.get("voice_missing", True)
+            progress.title = "Car Review: making audio and sending" if voicing else "Car Review: sending to your car"
+            progress.unit = "cards"
+            # Voice the nearest due days first; the phone list keeps Anki's play order.
+            order = sorted(range(len(cards)), key=lambda i: (cards[i]["due_day"], i))
+            ready_idx: set[int] = set()
+            unvoiced = 0
+            newer = False
+            for n, i in enumerate(order):
+                if not progress.checkpoint():
+                    break  # stopped by the user: the phone keeps the cards already sent
+                if pack_path.stat().st_mtime != loaded_at:
+                    newer = True
+                    break
+                card = cards[i]
+                clips = ((card["q_audio"], card["question"]), (card["a_audio"], card["answer"]))
+                if not voicing and not all((CACHE / f"{fp}.mp3").exists() for fp, _ in clips):
+                    unvoiced += 1
+                else:
+                    for fp, text in clips:
+                        path = CACHE / f"{fp}.mp3"
+                        if not path.exists():
+                            wait_for_charger(progress, ready=len(ready_idx), total=len(cards), made=made)
+                            path.write_bytes(voice.mp3(text))
+                            made += 1
+                        name = pairing.audio_name(fp)
+                        if name not in on_relay:
+                            relay.put(name, path.read_bytes())
+                            on_relay.add(name)
+                    ready_idx.add(i)
+                progress.step(n + 1, len(cards))
+                if len(ready_idx) and len(ready_idx) % BATCH == 0 and n + 1 < len(cards):
+                    ready = [cards[j] for j in sorted(ready_idx)]
+                    relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - n - 1, unvoiced=unvoiced))
+                    write_status(state="sending", ready=len(ready), total=len(cards), made=made,
+                                 elapsed=int(time.time() - started), made_at=pack["made_at"])
+            if newer:
+                continue  # start over with the newer list; finished clips are reused
+            ready = [cards[j] for j in sorted(ready_idx)]
+            relay.put("list", phone_list(pack, ready, pairing, pending=0, unvoiced=unvoiced))
+            break
         state = "stopped" if progress.stopped else "done"
-        write_status(state=state, ready=len(ready), total=len(cards), made=made,
+        write_status(state=state, ready=len(ready), total=len(cards), made=made, unvoiced=unvoiced,
                      elapsed=int(time.time() - started), made_at=pack["made_at"])
-        progress.finish(f"{len(ready):,} cards ready on your phone ({made:,} new clips made)."
-                        + (" Stopped early." if progress.stopped else " Done ✓"))
+        message = f"{len(ready):,} cards ready on your phone" + (f" ({made:,} new clips made)" if made else "") + "."
+        if unvoiced:
+            message += (f" {unvoiced:,} cards have no audio yet: plug in and use "
+                        "Tools ▸ Car Review ▸ Prepare audio.")
+        # A quick send with nothing to report closes its window by itself.
+        progress.auto_close = not made and not unvoiced and not progress.stopped
+        progress.finish(message + (" Stopped early." if progress.stopped else " Done ✓"))
     except Exception as err:
         write_status(state="error", error=str(err), detail=traceback.format_exc()[-2000:])
         progress.finish(f"Stopped by an error: {err}")
         raise
     finally:
         keep_awake(False)
+        LOCK.unlink(missing_ok=True)
 
 
 def prepare(pack_path: Path, progress: Progress) -> None:

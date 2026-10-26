@@ -23,6 +23,7 @@ class Progress:
         self.note = ""                 # extra line, e.g. "Paused: plug in to continue"
         self.finished = False
         self.result = ""               # final message
+        self.auto_close = False        # close the window shortly after finishing (quick sends)
         self.paused = False            # paused by the user
         self.stopped = False           # stop asked by the user
         self.started = time.time()
@@ -119,13 +120,18 @@ def run_with_window(progress: Progress, work) -> None:
             counts.config(text="Stopping after the current clip…")
 
     def refresh() -> None:
+        heading.config(text=progress.title)
+        root.title(progress.title)
         if progress.finished:
             bar["value"] = 100
-            counts.config(text=progress.result)
+            counts.config(text=progress.result, wraplength=400, justify="left")
             eta.config(text=f"Took {fmt_duration(time.time() - progress.started)}.")
-            note.config(text="You can close this window.")
+            note.config(text="This window closes by itself in a few seconds." if progress.auto_close
+                        else "You can close this window.")
             pause.pack_forget()
             stop.config(text="Close")
+            if progress.auto_close:
+                root.after(6000, root.destroy)
             return
         if progress.total:
             bar["value"] = 100 * progress.done / progress.total

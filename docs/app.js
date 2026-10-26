@@ -231,7 +231,9 @@
       await loadState();
       await downloadAudio();
       await uploadGrades();
-      message(list.pending ? `Your laptop is still preparing ${list.pending} more cards. Check again later.` : '');
+      message(list.pending ? `Your laptop is still preparing ${list.pending} more cards. Check again later.`
+        : list.unvoiced ? `${list.unvoiced} more cards are waiting for audio on your laptop (Anki ▸ Tools ▸ Car Review ▸ Prepare audio).`
+        : '');
     } catch (err) {
       log(`offline or relay error: ${err.message}`);
       message(list ? 'Offline: using the list already on this phone.' : 'Offline, and no list on this phone yet.');
