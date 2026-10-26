@@ -4,8 +4,8 @@ Run with the Car Review Python environment:
     python tools/make_samples.py
 
 Writes, for each voice, docs/samples/<voice>-<card>-q.mp3 (the question),
-<voice>-<card>-a<k>.mp3 (the answer to blank k) and <voice>-good.mp3 / <voice>-again.mp3,
-and prints the generation speed.
+<voice>-<card>-a<k>.mp3 (the answer to blank k), and prints the generation speed.
+The Good/Again sounds come from tools/make_sounds.py.
 """
 
 from __future__ import annotations
@@ -87,8 +87,6 @@ def main() -> None:
                 to_mp3(audio, OUT / f"{voice}-{n}-{name}.mp3")
         took = time.perf_counter() - started
         total_time += took
-        for word in ("good", "again"):
-            to_mp3(speak(pipeline, voice, word.capitalize() + "."), OUT / f"{voice}-{word}.mp3")
         print(f"{voice}: {audio_secs:.1f}s of audio in {took:.1f}s ({audio_secs / took:.1f}x real time)")
     # The test page reads how many blanks each sample card has from here.
     (OUT / "cards.json").write_text(json.dumps([len(a) for _, _, a in CARDS]))

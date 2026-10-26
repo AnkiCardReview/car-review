@@ -90,8 +90,8 @@
   <h2>Practice (works like the real app)</h2>
   <p>Four made-up cards. It reads the question and waits. Say your answer out loud, then:</p>
   <ul>
-    <li><b>⏭ Forward:</b> hear the answer (on the two-blank card, one blank per press). After the last answer, ⏭ = <b>Good</b> and the next card starts.</li>
-    <li><b>⏮ Back:</b> before the answer, repeats the question. After the last answer, ⏮ = <b>Again</b>.</li>
+    <li><b>⏭ Forward:</b> hear the answer (on the two-blank card, one blank per press). After the last answer, ⏭ = <b>Good</b> (a quick bright sound) and the next card starts.</li>
+    <li><b>⏮ Back:</b> before the answer, repeats the question. After the last answer, ⏮ = <b>Again</b> (a softer low sound).</li>
     <li>Pressing either button cuts off whatever is playing. Works with the phone locked.</li>
   </ul>
   <div class="panel">
@@ -180,8 +180,7 @@
     player.play().catch(playFailed);
   }
 
-  function playUrl(url) {
-    const rate = Number($('clip-rate').value);
+  function playUrl(url, rate = Number($('clip-rate').value)) {
     player.loop = false;
     player.src = url;
     // Changing src resets playbackRate to the default, so set both.
@@ -236,7 +235,7 @@
   function grade(result) {
     note(`graded-${result}`, `card ${practice.card + 1}`);
     const next = practice.card + 1;
-    playUrl(sample(result));
+    playUrl(`sounds/${result}.mp3`, 1);  // short confirmation sound, always at normal speed
     practiceStatus(result === 'good' ? 'Good ✓' : 'Again ↺');
     afterClip = () => askCard(next);
   }
