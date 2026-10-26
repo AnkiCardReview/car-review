@@ -128,13 +128,18 @@
   function nextCard() {
     const ahead = (list.learn_ahead_secs || 0) * 1000;
     const t = now();
+    const cards = todaysCards().filter(cardReady);
+    // Decks play one after another. As in Anki, a learning card from the list waits for its
+    // deck's turn; cards you missed in the car come back when due, whichever deck is playing.
+    const firstOther = cards.find((c) => learningDue(c) === null);
+    const currentBlock = firstOther ? firstOther.block : Infinity;
     let soonest = null;
     let learning = null;
     let other = null;
-    for (const c of todaysCards()) {
-      if (!cardReady(c)) continue;
+    for (const c of cards) {
       const due = learningDue(c);
       if (due !== null) {
+        if (!state.learning[c.cid] && c.block > currentBlock) continue; // its deck hasn't started yet
         if (due <= t + ahead && (!learning || due < learningDue(learning))) learning = c;
         if (soonest === null || due < soonest) soonest = due;
       } else if (!other) {
@@ -509,7 +514,7 @@
 
   // Lets a desktop browser simulate the buttons and the clock while testing.
   window.carReviewTest = {
-    forward, back, advance: (ms) => { clockOffset += ms; },
+    forward, back, next: () => goNext(), advance: (ms) => { clockOffset += ms; },
     get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
   };
 
