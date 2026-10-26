@@ -179,6 +179,9 @@ def main() -> None:
     s.add_argument("--pack", type=Path, required=True)
     sub.add_parser("status", help="print the last progress report")
     sub.add_parser("link", help="print the phone pairing link")
+    q = sub.add_parser("qr", help="save the pairing QR code as a PNG")
+    q.add_argument("--out", type=Path, required=True)
+    sub.add_parser("repair", help="forget the old phone: delete its box and make a new pairing")
     args = ap.parse_args()
     if args.cmd == "send":
         send(args.pack)
@@ -186,6 +189,18 @@ def main() -> None:
         print(STATUS.read_text() if STATUS.exists() else "{}")
     elif args.cmd == "link":
         print(pairing_link(load_pairing()))
+    elif args.cmd == "qr":
+        import segno
+
+        segno.make(pairing_link(load_pairing()), error="m").save(str(args.out), scale=8, border=3)
+        print(args.out)
+    elif args.cmd == "repair":
+        if PAIRING.exists():
+            old = load_pairing(create=False)
+            requests.delete(f"{RELAY}/{old.box_id}", headers={"X-Write-Key": old.write_key}, timeout=60)
+            PAIRING.unlink()
+        load_pairing()
+        print("new pairing made; scan the new QR code on your phone")
 
 
 if __name__ == "__main__":
