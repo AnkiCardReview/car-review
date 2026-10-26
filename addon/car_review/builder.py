@@ -155,7 +155,7 @@ def _retrievability(card, on_day: int) -> float:
     mem = card.memory_state
     if not mem or not mem.stability:
         return 1.0
-    decay = card.decay or 0.5
+    decay = getattr(card, "decay", None) or 0.5  # per-card decay exists from FSRS-6 (Anki 25.07)
     factor = 0.9 ** (-1 / decay) - 1
     last_day = card.due - card.ivl
     elapsed = max(0, on_day - last_day)

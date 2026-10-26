@@ -23,35 +23,13 @@ from pathlib import Path
 
 import requests
 
+from .common import CACHE, HOME, INBOX, PAIRING, RELAY, STATUS, load_pairing, pairing_link
 from .pairing import Pairing
 from .power import on_charger
 from .ui import Progress, run_with_window
+from .voice import Voice, available_engine
 
-HOME = Path.home() / "CarReview"
-CACHE = HOME / "audio-cache"
-STATUS = HOME / "status.json"
-PAIRING = HOME / "pairing.json"
-INBOX = HOME / "inbox"  # decrypted grade files waiting to be applied
-RELAY = "https://car-review-relay.ankicardreview.workers.dev/v1"
-APP_URL = "https://ankicardreview.github.io/car-review/"
-RATE = 24000
 BATCH = 25
-
-
-def load_pairing(create: bool = True) -> Pairing:
-    if PAIRING.exists():
-        return Pairing.from_code(json.loads(PAIRING.read_text())["code"])
-    if not create:
-        raise SystemExit("not paired yet")
-    pairing = Pairing.new()
-    HOME.mkdir(parents=True, exist_ok=True)
-    PAIRING.write_text(json.dumps({"code": pairing.code, "created": int(time.time())}))
-    return pairing
-
-
-def pairing_link(pairing: Pairing) -> str:
-    # The secret goes after "#", which browsers never send to any server.
-    return f"{APP_URL}#pair={pairing.code}"
 
 
 def write_status(**fields) -> None:
@@ -60,15 +38,29 @@ def write_status(**fields) -> None:
     STATUS.write_text(json.dumps(fields))
 
 
+_caffeinate = None
+
+
 def keep_awake(on: bool) -> None:
-    """Ask Windows not to sleep while working (closing the lid still sleeps)."""
+    """Ask the computer not to sleep while working (closing the lid still sleeps)."""
+    global _caffeinate
     if sys.platform == "win32":
         ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+    elif sys.platform == "darwin":
+        import os
+        import subprocess
+
+        if on and _caffeinate is None:
+            # Stays awake while this process runs, and stops by itself if it ends.
+            _caffeinate = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+        elif not on and _caffeinate is not None:
+            _caffeinate.terminate()
+            _caffeinate = None
 
 
 def be_gentle() -> None:
-    """Run at low priority on 3 cores, so studying and anything else stay smooth."""
+    """Run at low priority (and the voice on 3 cores), so studying and anything else stay smooth."""
     if sys.platform == "win32":
         BELOW_NORMAL_PRIORITY_CLASS = 0x4000
         k32 = ctypes.windll.kernel32
@@ -76,12 +68,10 @@ def be_gentle() -> None:
         k32.GetCurrentProcess.restype = ctypes.c_void_p
         k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
-    try:
-        import torch
+    else:
+        import os
 
-        torch.set_num_threads(3)
-    except ImportError:
-        pass
+        os.nice(10)
 
 
 def wait_for_charger(progress: Progress | None = None, **status) -> None:
@@ -97,31 +87,6 @@ def wait_for_charger(progress: Progress | None = None, **status) -> None:
     if progress:
         progress.note = ""
     keep_awake(True)
-
-
-class Voice:
-    """Kokoro Heart, loaded on first use."""
-
-    def __init__(self) -> None:
-        self.pipeline = None
-
-    def mp3(self, text: str) -> bytes:
-        import lameenc
-        import numpy as np
-
-        if self.pipeline is None:
-            from kokoro import KPipeline
-
-            self.pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
-        chunks = [a.numpy() for _, _, a in self.pipeline(text, voice="af_heart", speed=1.0)]
-        audio = np.concatenate(chunks) if chunks else np.zeros(RATE // 10, dtype=np.float32)
-        pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes()
-        enc = lameenc.Encoder()
-        enc.set_bit_rate(48)
-        enc.set_in_sample_rate(RATE)
-        enc.set_channels(1)
-        enc.set_quality(2)
-        return enc.encode(pcm) + enc.flush()
 
 
 class Relay:
@@ -342,9 +307,9 @@ def main() -> None:
     pr.add_argument("--no-window", action="store_true", help="don't show the progress window")
     sub.add_parser("status", help="print the last progress report")
     sub.add_parser("link", help="print the phone pairing link")
-    q = sub.add_parser("qr", help="save the pairing QR code as a PNG")
-    q.add_argument("--out", type=Path, required=True)
     sub.add_parser("repair", help="forget the old phone: delete its box and make a new pairing")
+    sub.add_parser("engine", help="print which voice engine is installed (onnx, torch or none)")
+    sub.add_parser("voice-check", help="make one short clip to check the voice works")
     sub.add_parser("fetch-grades", help="download and decrypt the phone's grades into the inbox folder")
     d = sub.add_parser("delete-grades", help="delete grade files from the relay once they're applied")
     d.add_argument("names", nargs="+")
@@ -361,11 +326,13 @@ def main() -> None:
         print(STATUS.read_text() if STATUS.exists() else "{}")
     elif args.cmd == "link":
         print(pairing_link(load_pairing()))
-    elif args.cmd == "qr":
-        import segno
-
-        segno.make(pairing_link(load_pairing()), error="m").save(str(args.out), scale=8, border=3)
-        print(args.out)
+    elif args.cmd == "engine":
+        print(available_engine() or "none")
+    elif args.cmd == "voice-check":
+        voice = Voice()
+        started = time.time()
+        clip = voice.mp3("Car Review is ready. Drive safely.")
+        print(json.dumps({"engine": voice.engine, "bytes": len(clip), "secs": round(time.time() - started, 1)}))
     elif args.cmd == "repair":
         if PAIRING.exists():
             old = load_pairing(create=False)

@@ -11,6 +11,10 @@ share. Everything else is derived from it with HKDF-SHA256, so the relay never s
 Encrypted file format: 12-byte random nonce + ciphertext + 16-byte tag, with the file's name
 as associated data so the relay can't swap one file for another. The phone app implements the
 same scheme with WebCrypto.
+
+The box id and keys need only Python's standard library, so Anki itself can pair a phone
+before the voice helper is installed. Encrypting and decrypting need `cryptography`, which
+comes with the helper.
 """
 
 from __future__ import annotations
@@ -20,10 +24,6 @@ import hashlib
 import hmac
 import os
 from dataclasses import dataclass
-
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 SALT = b"car-review-v1"
 
@@ -37,7 +37,15 @@ def from_b64url(text: str) -> bytes:
 
 
 def _derive(secret: bytes, label: bytes) -> bytes:
-    return HKDF(algorithm=hashes.SHA256(), length=32, salt=SALT, info=label).derive(secret)
+    """HKDF-SHA256 (RFC 5869) with a 32-byte output: one extract and one expand step."""
+    prk = hmac.new(SALT, secret, hashlib.sha256).digest()
+    return hmac.new(prk, label + b"\x01", hashlib.sha256).digest()
+
+
+def _aes(secret: bytes):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # only in the helper's Python
+
+    return AESGCM(_derive(secret, b"encrypt"))
 
 
 @dataclass(frozen=True)
@@ -67,10 +75,10 @@ class Pairing:
 
     def encrypt(self, name: str, data: bytes) -> bytes:
         nonce = os.urandom(12)
-        return nonce + AESGCM(_derive(self.secret, b"encrypt")).encrypt(nonce, data, name.encode())
+        return nonce + _aes(self.secret).encrypt(nonce, data, name.encode())
 
     def decrypt(self, name: str, blob: bytes) -> bytes:
-        return AESGCM(_derive(self.secret, b"encrypt")).decrypt(blob[:12], blob[12:], name.encode())
+        return _aes(self.secret).decrypt(blob[:12], blob[12:], name.encode())
 
     def audio_name(self, fingerprint: str) -> str:
         """Relay file name for a clip, keyed so it reveals nothing about the card."""

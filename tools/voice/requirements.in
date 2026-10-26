@@ -1,0 +1,10 @@
+# What the Car Review helper's own Python needs (see addon/car_review/voice_setup.py).
+# Regenerate the pinned, hash-checked list with tools/voice/lock.py after changing this.
+kokoro-onnx          # the Kokoro voice on ONNX Runtime
+misaki==0.9.4        # Kokoro's own pronunciation rules (same as the PyTorch version)
+spacy                # used by misaki for English
+espeakng-loader      # pronunciation fallback for unknown words
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+lameenc              # MP3 encoding
+cryptography         # AES-GCM encryption for the relay
+requests             # talking to the relay
