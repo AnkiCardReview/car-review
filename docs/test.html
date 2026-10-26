@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Car Review Button Test</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --text: #eef0f4; --muted: #9aa1ad;
+    --accent: #4f8cff; --good: #3ccf7a; --again: #ff6b5e; --border: #2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px 40px;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 8px 0 4px; }
+  h2 { font-size: 18px; margin: 28px 0 8px; }
+  p, li { color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin: 12px 0; }
+  button {
+    font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; width: 100%; margin: 6px 0; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; font-size: 20px; padding: 18px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  #status { font-size: 28px; font-weight: 700; text-align: center; margin: 8px 0; }
+  #quiet { text-align: center; color: var(--muted); }
+  .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .counts div { background: var(--bg); border-radius: 10px; padding: 8px 4px; }
+  .counts b { display: block; font-size: 22px; color: var(--text); }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); }
+  select, input[type=range] { width: 100%; font: inherit; }
+  select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+  .toggle { display: flex; align-items: center; gap: 10px; margin: 10px 0; color: var(--text); }
+  .toggle input { width: 22px; height: 22px; }
+  #log { font: 13px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); max-height: 260px; overflow-y: auto; white-space: pre-wrap; }
+  ol li { margin: 6px 0; }
+  ol li b { color: var(--text); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Car Review · Button Test</h1>
+  <p><a href="./" style="color:var(--accent)">← Car Review app</a> · <a href="voice-test.html" style="color:var(--accent)">Phone voice speed test</a></p>
+  <p>This page checks whether your iPhone sends Forward and Back to a web page the same way it does for Spotify. There are no cards here. <b>Only do the car part while parked.</b></p>
+
+  <div class="panel">
+    <button id="start" class="primary">Start</button>
+    <div id="live" class="hidden">
+      <div id="status">Ready</div>
+      <div id="quiet">Quiet for 0:00</div>
+      <div class="counts">
+        <div><b id="c-next">0</b>Forward</div>
+        <div><b id="c-prev">0</b>Back</div>
+        <div><b id="c-other">0</b>Other</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label for="mode">How it talks</label>
+    <select id="mode">
+      <option value="voice">iPhone voice</option>
+      <option value="clips">Recorded clips</option>
+    </select>
+    <div id="voice-opts">
+      <label for="voice">iPhone voice</label>
+      <select id="voice"></select>
+      <label for="rate">Speed: <span id="rate-val">1.0</span>×</label>
+      <input id="rate" type="range" min="0.8" max="1.6" step="0.1" value="1.0">
+    </div>
+    <label for="keepalive">Background sound between presses</label>
+    <select id="keepalive">
+      <option value="silent">Silent</option>
+      <option value="tone">Quiet hum (you'll hear it)</option>
+    </select>
+    <label class="toggle"><input id="seek" type="checkbox"> Also listen for holding a button (test 5)</label>
+    <div class="row">
+      <button id="sample">Read sample card</button>
+      <button id="delayed">Read it in 10 s</button>
+    </div>
+  </div>
+
+  <h2>Practice (works like the real app)</h2>
+  <p>Four made-up cards. It reads the question and waits. Say your answer out loud, then:</p>
+  <ul>
+    <li><b>⏭ Forward:</b> hear the answer (on the two-blank card, both answers together, as in Anki). After the answer, ⏭ = <b>Good</b> (a quick bright sound) and the next card starts.</li>
+    <li><b>⏮ Back:</b> before the answer, repeats the question. After the answer, ⏮ = <b>Again</b> (a softer low sound).</li>
+    <li>Pressing either button cuts off whatever is playing. Works with the phone locked.</li>
+  </ul>
+  <div class="panel">
+    <div id="practice-status" style="text-align:center;font-weight:600;margin-bottom:8px">Not started</div>
+    <input id="sample-voice" type="hidden" value="af_heart">
+    <label for="clip-rate">Clip speed: <span id="clip-rate-val">1.2</span>×</label>
+    <input id="clip-rate" type="range" min="0.8" max="2.0" step="0.1" value="1.2">
+    <button id="practice" class="primary">Start practice</button>
+  </div>
+
+  <h2>Tests</h2>
+  <ol>
+    <li><b>Screen on:</b> tap Start, then use the ⏭ / ⏮ buttons in Control Center. You should hear "Forward" or "Back".</li>
+    <li><b>Screen locked:</b> lock the phone and press ⏭ / ⏮ on the lock screen (or with earbuds). Does it still talk?</li>
+    <li><b>After silence:</b> leave it alone for 2+ minutes (watch "Quiet for"), then press again. Does it still respond?</li>
+    <li><b>Voice while locked:</b> tap "Read it in 10 s" and lock the phone. Do you hear the sample card? Then switch "How it talks" to Recorded clips and try 1–4 again.</li>
+    <li><b>Holding:</b> tick "Also listen for holding a button", then press and hold ⏭ or ⏮. Does anything new appear in the log? (Holding may change what the lock screen shows.)</li>
+    <li><b>Car (parked):</b> connect to the Highlander, set it to Bluetooth Audio, start this page and press the steering-wheel buttons. Does the car screen show "Car Review"?</li>
+  </ol>
+  <p>When you're done, tap <b>Copy results</b> and paste them to Claude.</p>
+
+  <div class="panel">
+    <div id="log">Nothing yet.</div>
+    <div class="row">
+      <button id="copy">Copy results</button>
+      <button id="clear">Clear</button>
+    </div>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const ms = navigator.mediaSession;
+  const entries = [];
+  const counts = { nexttrack: 0, previoustrack: 0, other: 0 };
+  const labels = {
+    nexttrack: 'Forward', previoustrack: 'Back', play: 'Play', pause: 'Pause', stop: 'Stop',
+    seekforward: 'Hold forward', seekbackward: 'Hold back', seekto: 'Seek'
+  };
+  const clipFor = {
+    nexttrack: 'forward', previoustrack: 'back', play: 'play', pause: 'pause',
+    seekforward: 'holdfwd', seekbackward: 'holdback'
+  };
+  const sampleText = [
+    'Sample card.',
+    'The most common cause of community acquired pneumonia is: blank.',
+    'Answer: Streptococcus pneumoniae.'
+  ];
+
+  // One audio element is the "now playing" source. Between clips it loops
+  // near-silence so iOS keeps sending the Forward/Back buttons to this page.
+  const player = new Audio();
+  player.preload = 'auto';
+  const silenceUrl = makeLoop(false);
+  const toneUrl = makeLoop(true);
+  let started = false;
+  let lastPress = Date.now();
+
+  function makeLoop(tone) {
+    const rate = 22050, secs = 2, n = rate * secs;
+    const buf = new ArrayBuffer(44 + n * 2);
+    const v = new DataView(buf);
+    const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, n * 2, true);
+    // Silent mode: inaudible noise rather than pure zeros, in case iOS treats digital
+    // silence as "not playing". Tone mode: a soft 220 Hz hum (2 s = whole cycles, so it loops cleanly).
+    for (let i = 0; i < n; i++) {
+      const s = tone ? Math.sin(2 * Math.PI * 220 * i / rate) * 1500 : (Math.random() - 0.5) * 6;
+      v.setInt16(44 + i * 2, Math.round(s), true);
+    }
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+
+  // Switching sources cancels the previous play() with an AbortError; that one is expected.
+  function playFailed(e) {
+    if (e.name !== 'AbortError') note('audio-error', `${e.name}: ${e.message}`);
+  }
+
+  function playSilence() {
+    player.loop = true;
+    player.src = $('keepalive').value === 'tone' ? toneUrl : silenceUrl;
+    player.play().catch(playFailed);
+  }
+
+  function playUrl(url, rate = Number($('clip-rate').value)) {
+    player.loop = false;
+    player.src = url;
+    // Changing src resets playbackRate to the default, so set both.
+    player.defaultPlaybackRate = rate;
+    player.playbackRate = rate;
+    player.preservesPitch = true;
+    player.play().catch(playFailed);
+  }
+  const playClip = (name) => playUrl(`clips/${name}.wav`);
+
+  // When a clip ends: run the follow-up step if there is one (e.g. "Good." then the next
+  // question), else play any queued clip, else go back to the silent loop and wait.
+  const queue = [];
+  let afterClip = null;
+  player.addEventListener('ended', () => {
+    if (player.loop) return;
+    if (afterClip) { const next = afterClip; afterClip = null; next(); return; }
+    if (queue.length) playUrl(queue.shift()); else playSilence();
+  });
+
+  // Practice: question -> wait -> Forward reveals the answer (all of a card's blanks together,
+  // as in Anki) -> Forward = Good / Back = Again.
+  let cardCount = 4;
+  fetch('samples/cards.json').then((r) => r.json()).then((v) => { cardCount = v; }).catch(() => {});
+  const practice = { on: false, card: 0, revealed: false };
+  const sample = (name) => `samples/${$('sample-voice').value}-${name}.mp3`;
+  function practiceStatus(text) {
+    $('practice-status').textContent = text;
+    setTitle(text);
+  }
+  function askCard(i) {
+    practice.card = i % cardCount;
+    practice.revealed = false;
+    afterClip = null;
+    queue.length = 0;
+    playUrl(sample(`${practice.card + 1}-q`));
+    practiceStatus(`Card ${practice.card + 1} of ${cardCount} · say your answer, then ⏭`);
+  }
+  function practiceForward() {
+    if (practice.revealed) { grade('good'); return; }
+    practice.revealed = true;
+    afterClip = null;
+    playUrl(sample(`${practice.card + 1}-a`));
+    practiceStatus('Answer · ⏭ Good   ⏮ Again');
+  }
+  function practiceBack() {
+    if (practice.revealed) grade('again');
+    else askCard(practice.card);
+  }
+  function grade(result) {
+    note(`graded-${result}`, `card ${practice.card + 1}`);
+    const next = practice.card + 1;
+    playUrl(`sounds/${result}.mp3`, 1);  // short confirmation sound, always at normal speed
+    practiceStatus(result === 'good' ? 'Good ✓' : 'Again ↺');
+    afterClip = () => askCard(next);
+  }
+
+  // Diagnostics: when the audio stops or the screen changes, and when the page was frozen.
+  for (const type of ['pause', 'stalled', 'error']) {
+    player.addEventListener(type, () => { if (started) note(`audio-${type}`, player.loop ? 'background loop' : 'clip'); });
+  }
+  document.addEventListener('visibilitychange', () => { if (started) note(`screen-${document.visibilityState}`); });
+  let lastTick = Date.now();
+  setInterval(() => {
+    const gap = Date.now() - lastTick;
+    if (started && gap > 3000) note('page-was-frozen', `${Math.round(gap / 1000)}s`);
+    lastTick = Date.now();
+  }, 1000);
+
+  function speak(lines) {
+    speechSynthesis.cancel();
+    const voice = speechSynthesis.getVoices().find((v) => v.voiceURI === $('voice').value);
+    for (const text of [].concat(lines)) {
+      const u = new SpeechSynthesisUtterance(text);
+      if (voice) u.voice = voice;
+      u.rate = Number($('rate').value);
+      speechSynthesis.speak(u);
+    }
+  }
+
+  function say(name) {
+    if (practice.on && name === 'nexttrack') { practiceForward(); return; }
+    if (practice.on && name === 'previoustrack') { practiceBack(); return; }
+    if ($('mode').value !== 'clips') speak(labels[name] || name);
+    else playClip(clipFor[name] || 'forward');
+  }
+
+  function setTitle(text) {
+    if (!ms) return;
+    ms.metadata = new MediaMetadata({ title: text, artist: 'Car Review', album: 'Button test' });
+  }
+
+  function note(name, detail = '') {
+    const now = new Date();
+    const quiet = Math.round((now - lastPress) / 1000);
+    const audio = player.paused ? 'paused' : 'playing';
+    entries.push(`${now.toLocaleTimeString()}  ${labels[name] || name}  ` +
+      `screen=${document.visibilityState}  audio=${audio}  quiet=${quiet}s  mode=${$('mode').value}${detail ? '  ' + detail : ''}`);
+    $('log').textContent = entries.slice().reverse().join('\n');
+  }
+
+  function onAction(name) {
+    note(name);
+    lastPress = Date.now();
+    if (name in counts) counts[name]++; else counts.other++;
+    $('c-next').textContent = counts.nexttrack;
+    $('c-prev').textContent = counts.previoustrack;
+    $('c-other').textContent = counts.other;
+    $('status').textContent = labels[name] || name;
+    setTitle(`${labels[name] || name} ×${name in counts ? counts[name] : counts.other}`);
+    say(name);
+    // Stay the "now playing" app even if Pause was pressed.
+    if (name === 'pause' || name === 'stop') setTimeout(() => player.paused && playSilence(), 300);
+  }
+
+  function registerHandlers() {
+    if (!ms) { note('no-media-session', 'this browser has no media controls'); return; }
+    const base = ['nexttrack', 'previoustrack', 'play', 'pause', 'stop'];
+    const seek = ['seekforward', 'seekbackward', 'seekto'];
+    for (const a of base) trySet(a, () => onAction(a));
+    for (const a of seek) trySet(a, $('seek').checked ? () => onAction(a) : null);
+  }
+  function trySet(action, fn) {
+    try { ms.setActionHandler(action, fn); } catch { note('unsupported', action); }
+  }
+
+  function loadVoices() {
+    const voices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith('en'));
+    const sel = $('voice');
+    const keep = sel.value;
+    sel.innerHTML = '';
+    for (const v of voices) {
+      const o = document.createElement('option');
+      o.value = v.voiceURI;
+      o.textContent = `${v.name} (${v.lang})`;
+      sel.appendChild(o);
+    }
+    if (keep) sel.value = keep;
+    else {
+      const best = voices.find((v) => /enhanced|premium/i.test(v.name) && v.lang === 'en-US')
+        || voices.find((v) => v.lang === 'en-US');
+      if (best) sel.value = best.voiceURI;
+    }
+  }
+  speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+
+  $('start').addEventListener('click', (event) => {
+    started = true;
+    playSilence();
+    registerHandlers();
+    setTitle('Car Review ready');
+    $('start').classList.add('hidden');
+    $('live').classList.remove('hidden');
+    lastPress = Date.now();
+    note('started', navigator.userAgent.replace(/^Mozilla\/5\.0 /, ''));
+    if (event.detail === 'practice') { /* practice starts with its own question */ }
+    else if ($('mode').value === 'clips') playClip('ready');
+    else speak('Ready. Press forward or back.');
+    setInterval(() => {
+      const s = Math.floor((Date.now() - lastPress) / 1000);
+      $('quiet').textContent = `Quiet for ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }, 1000);
+  });
+
+  $('mode').addEventListener('change', () => {
+    $('voice-opts').classList.toggle('hidden', $('mode').value !== 'voice');
+    note('mode-changed');
+  });
+  $('keepalive').addEventListener('change', () => { note('background-sound', $('keepalive').value); if (started) playSilence(); });
+  $('rate').addEventListener('input', () => { $('rate-val').textContent = Number($('rate').value).toFixed(1); });
+  $('seek').addEventListener('change', () => { if (started) registerHandlers(); note('hold-listening', String($('seek').checked)); });
+
+  function readSample() {
+    note('sample', $('mode').value === 'clips' ? $('sample-voice').value : '');
+    if ($('mode').value !== 'clips') { speak(sampleText); return; }
+    afterClip = null;
+    playUrl(sample('1-q'));
+    queue.length = 0;
+    queue.push(sample('1-a'));
+  }
+  $('practice').addEventListener('click', () => {
+    $('mode').value = 'clips';
+    $('mode').dispatchEvent(new Event('change'));
+    if (!started) $('start').dispatchEvent(new CustomEvent('click', { detail: 'practice' }));
+    practice.on = true;
+    $('practice').textContent = 'Restart practice';
+    note('practice', `${$('sample-voice').value} at ${$('clip-rate').value}x`);
+    askCard(0);
+  });
+  $('clip-rate').addEventListener('input', () => {
+    const rate = Number($('clip-rate').value);
+    $('clip-rate-val').textContent = rate.toFixed(1);
+    if (!player.loop) player.playbackRate = rate;
+  });
+  $('sample').addEventListener('click', readSample);
+  $('delayed').addEventListener('click', () => {
+    note('sample-in-10s');
+    setTimeout(readSample, 10000);
+  });
+
+  $('copy').addEventListener('click', async () => {
+    const text = ['Car Review button test', ...entries].join('\n');
+    try { await navigator.clipboard.writeText(text); $('copy').textContent = 'Copied ✓'; }
+    catch { $('copy').textContent = 'Copy failed — select the log text instead'; }
+    setTimeout(() => { $('copy').textContent = 'Copy results'; }, 2500);
+  });
+  $('clear').addEventListener('click', () => { entries.length = 0; $('log').textContent = 'Nothing yet.'; });
+
+  // Lets a desktop browser (with no media keys) simulate the buttons while testing the page.
+  window.carReviewTest = { forward: () => onAction('nexttrack'), back: () => onAction('previoustrack') };
+})();
+</script>
+</body>
+</html>

@@ -45,6 +45,12 @@ class Spoken:
             out.append(f"[{hint_phrase(seg.hint) if seg.hint else 'blank'}]" if seg.blank else seg.text)
         return " ".join(s for s in out if s).strip()
 
+    def spoken_question(self) -> str:
+        """The question exactly as the voice reads it: blanks as "blank" or as the hint question."""
+        parts = [(hint_phrase(s.hint) if s.hint else "blank") if s.blank else s.text for s in self.question]
+        text = " ".join(p for p in parts if p).strip()
+        return text if text.endswith(("?", ".", "!")) else text + "."
+
     def answer_text(self) -> str:
         """All answers as one sentence: 'Gallstones and alcohol', 'A, B, and C'."""
         items = [a.rstrip(" .") for a in self.answers if a.strip()]
