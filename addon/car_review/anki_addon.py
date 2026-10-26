@@ -37,16 +37,19 @@ def config() -> dict:
     return mw.addonManager.getConfig(__name__) or {}
 
 
-def helper_python() -> Path:
+def helper_python(windowless: bool = False) -> Path:
     custom = config().get("python")
     if custom:
         return Path(custom)
     venv = HOME / "venv"
-    return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    if sys.platform == "win32":
+        # pythonw.exe runs without a console window; used for the helper's own progress window.
+        return venv / ("Scripts/pythonw.exe" if windowless else "Scripts/python.exe")
+    return venv / "bin/python"
 
 
 def run_helper(*args: str, wait: bool = True) -> subprocess.CompletedProcess | None:
-    python = helper_python()
+    python = helper_python(windowless=not wait)
     if not python.exists():
         showWarning(f"Car Review's voice helper isn't set up on this computer yet.\n\nExpected it at:\n{python}")
         return None
@@ -57,7 +60,7 @@ def run_helper(*args: str, wait: bool = True) -> subprocess.CompletedProcess | N
     kwargs = dict(cwd=str(ADDON_DIR.parent), creationflags=flags)
     if wait:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=120, **kwargs)
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=open(HOME / "send.log", "w"), **kwargs)
+    subprocess.Popen(cmd, **kwargs)  # pythonw: no console; the helper logs to helper.log
     return None
 
 
@@ -136,7 +139,7 @@ def show_status() -> None:
         return
     s = json.loads(STATUS.read_text())
     if s.get("state") == "error":
-        showWarning(f"The last send stopped with an error:\n\n{s.get('error')}\n\nDetails are in {HOME / 'send.log'}")
+        showWarning(f"The last send stopped with an error:\n\n{s.get('error')}\n\nDetails are in {HOME / 'helper.log'}")
         return
     mins = round(s.get("elapsed", 0) / 60)
     state = "finished" if s.get("state") == "done" else "still working"

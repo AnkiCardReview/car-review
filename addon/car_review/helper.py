@@ -71,6 +71,9 @@ def be_gentle() -> None:
     if sys.platform == "win32":
         BELOW_NORMAL_PRIORITY_CLASS = 0x4000
         k32 = ctypes.windll.kernel32
+        # Handles are pointer-sized: without these types the 64-bit handle gets truncated.
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
     try:
         import torch
@@ -269,6 +272,12 @@ def prepare(pack_path: Path, progress: Progress) -> None:
 
 
 def main() -> None:
+    # Started with pythonw.exe (no console window), Python has nowhere to print; keep a log instead.
+    if sys.stderr is None or sys.stdout is None:
+        HOME.mkdir(parents=True, exist_ok=True)
+        log = open(HOME / "helper.log", "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stdout or log
+        sys.stderr = sys.stderr or log
     ap = argparse.ArgumentParser(prog="car_review.helper")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("send", help="make missing audio, encrypt and upload a car list")
