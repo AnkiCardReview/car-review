@@ -65,6 +65,47 @@ def keep_awake(on: bool) -> None:
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
 
 
+def be_gentle() -> None:
+    """Run at low priority on 3 cores, so studying and anything else stay smooth."""
+    if sys.platform == "win32":
+        BELOW_NORMAL_PRIORITY_CLASS = 0x4000
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
+    try:
+        import torch
+
+        torch.set_num_threads(3)
+    except ImportError:
+        pass
+
+
+def on_charger() -> bool:
+    """True when plugged in (or when power status can't be read, e.g. a desktop)."""
+    if sys.platform != "win32":
+        return True
+
+    class Status(ctypes.Structure):
+        _fields_ = [("ACLineStatus", ctypes.c_byte), ("BatteryFlag", ctypes.c_byte),
+                    ("BatteryLifePercent", ctypes.c_byte), ("SystemStatusFlag", ctypes.c_byte),
+                    ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+
+    s = Status()
+    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
+        return True
+    return s.ACLineStatus != 0  # 0 = on battery, 1 = plugged in, 255 = unknown
+
+
+def wait_for_charger(**status) -> None:
+    """Pause while on battery; carry on when plugged back in."""
+    if on_charger():
+        return
+    keep_awake(False)  # let the laptop sleep normally while unplugged
+    write_status(state="paused (on battery)", **status)
+    while not on_charger():
+        time.sleep(30)
+    keep_awake(True)
+
+
 class Voice:
     """Kokoro Heart, loaded on first use."""
 
@@ -140,6 +181,7 @@ def send(pack_path: Path) -> None:
     relay = Relay(pairing)
     voice = Voice()
     CACHE.mkdir(parents=True, exist_ok=True)
+    be_gentle()
     keep_awake(True)
     cards = pack["cards"]
     started = time.time()
@@ -151,6 +193,7 @@ def send(pack_path: Path) -> None:
             for fp, text in ((card["q_audio"], card["question"]), (card["a_audio"], card["answer"])):
                 path = CACHE / f"{fp}.mp3"
                 if not path.exists():
+                    wait_for_charger(ready=len(ready), total=len(cards), made=made)
                     path.write_bytes(voice.mp3(text))
                     made += 1
                 name = pairing.audio_name(fp)
@@ -173,11 +216,43 @@ def send(pack_path: Path) -> None:
         keep_awake(False)
 
 
+def prepare(pack_path: Path) -> None:
+    """Make audio ahead of time (nearest due date first) without uploading anything."""
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    cards = sorted(pack["cards"], key=lambda c: c["due_day"])
+    todo: dict[str, str] = {}
+    for c in cards:
+        for fp, text in ((c["q_audio"], c["question"]), (c["a_audio"], c["answer"])):
+            if fp not in todo and not (CACHE / f"{fp}.mp3").exists():
+                todo[fp] = text
+    voice = Voice()
+    CACHE.mkdir(parents=True, exist_ok=True)
+    be_gentle()
+    keep_awake(True)
+    started = time.time()
+    total = len(todo)
+    try:
+        for i, (fp, text) in enumerate(todo.items()):
+            wait_for_charger(made=i, total=total)
+            (CACHE / f"{fp}.mp3").write_bytes(voice.mp3(text))
+            if i % 20 == 0:
+                write_status(state="preparing audio ahead", made=i, total=total, cards=len(cards),
+                             elapsed=int(time.time() - started))
+        write_status(state="prepared", made=total, total=total, cards=len(cards), elapsed=int(time.time() - started))
+    except Exception as err:
+        write_status(state="error", error=str(err), detail=traceback.format_exc()[-2000:])
+        raise
+    finally:
+        keep_awake(False)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="car_review.helper")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("send", help="make missing audio, encrypt and upload a car list")
     s.add_argument("--pack", type=Path, required=True)
+    pr = sub.add_parser("prepare", help="make audio ahead of time for a list (no upload)")
+    pr.add_argument("--pack", type=Path, required=True)
     sub.add_parser("status", help="print the last progress report")
     sub.add_parser("link", help="print the phone pairing link")
     q = sub.add_parser("qr", help="save the pairing QR code as a PNG")
@@ -189,6 +264,8 @@ def main() -> None:
     args = ap.parse_args()
     if args.cmd == "send":
         send(args.pack)
+    elif args.cmd == "prepare":
+        prepare(args.pack)
     elif args.cmd == "status":
         print(STATUS.read_text() if STATUS.exists() else "{}")
     elif args.cmd == "link":

@@ -24,10 +24,11 @@ def main() -> None:
     ap.add_argument("--profile", required=True)
     ap.add_argument("--decks", nargs="+", required=True)
     ap.add_argument("--limit", type=int, default=0, help="keep only the first N cards (for testing)")
+    ap.add_argument("--days", type=int, default=1, help="include reviews due up to this many days ahead")
     ap.add_argument("--out", type=Path, default=HOME / "outbox" / "pack.json")
     args = ap.parse_args()
     with collection_copy(args.profile) as col:
-        pack = build_pack(col, args.decks)
+        pack = build_pack(col, args.decks, days_ahead=args.days)
     if args.limit:
         pack["cards"] = pack["cards"][: args.limit]
     args.out.parent.mkdir(parents=True, exist_ok=True)
