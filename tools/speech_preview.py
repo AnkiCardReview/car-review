@@ -23,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "addon"))
-from car_review.speech import CLOZE, to_speech  # noqa: E402
+from car_review.speech import CLOZE, hint_phrase, to_speech  # noqa: E402
 
 
 def read_cards(profile: str, deck_names: list[str], days_ahead: int):
@@ -112,7 +112,7 @@ def render(results, sample, kept, skips, changes, acronyms) -> str:
         q = []
         for seg in spoken.question:
             if seg.blank:
-                q.append(f'<span class="blank">🔔 {e(seg.hint) if seg.hint else ""}</span>')
+                q.append(f'<span class="blank">{e(hint_phrase(seg.hint)) if seg.hint else "blank"}</span>')
             else:
                 q.append(e(seg.text))
         answers = "<br>".join(f"{i + 1}. {e(a)}" for i, a in enumerate(spoken.answers))
@@ -139,7 +139,7 @@ img {{ max-width: 200px; }}
 </style></head><body>
 <h1>Car Review speech preview</h1>
 <p>{len(results)} cloze cards due in the selected decks · <b>{kept} kept for audio ({100 * kept / max(1, len(results)):.1f}%)</b>.
-Left: the card as written (this card's answer highlighted). Right: what Car Review would say; 🔔 is the blank chime, followed by the hint if there is one.</p>
+Left: the card as written (this card's answer highlighted). Right: what Car Review would say; the highlighted word is how the blank is spoken.</p>
 <h3>Skipped</h3><ul>{skip_list or "<li>none</li>"}</ul>
 <h3>Conversions used</h3><ul>{change_list or "<li>none</li>"}</ul>
 <h3>Abbreviations left as letters (check these sound right)</h3><p>{acro}</p>

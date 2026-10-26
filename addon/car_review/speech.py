@@ -33,11 +33,24 @@ class Spoken:
     changes: set[str] = field(default_factory=set)
 
     def question_text(self) -> str:
-        """The question as one readable line, with blanks shown as [blank] or [hint]."""
+        """The question as one readable line, with blanks shown as [blank] or [which drug?]."""
         out = []
         for seg in self.question:
-            out.append(f"[{seg.hint or 'blank'}]" if seg.blank else seg.text)
+            out.append(f"[{hint_phrase(seg.hint) if seg.hint else 'blank'}]" if seg.blank else seg.text)
         return " ".join(s for s in out if s).strip()
+
+
+def hint_phrase(hint: str) -> str:
+    """How a cloze hint is said in place of the blank: 'drug' -> 'which drug?', '2' -> 'name two'."""
+    h = hint.strip().rstrip("?.").strip()
+    if re.fullmatch(r"\d+", h):
+        n = int(h)
+        return f"name {NUMBER_WORDS[n] if n < len(NUMBER_WORDS) else h}"
+    if re.match(r"(?i)(which|what|how|who|where|when|why|name|list)\b", h) or re.match(r"\d+(st|nd|rd|th)\b", h):
+        return h + "?"
+    if not h[:2].isupper():  # keep acronyms like "MOA" as they are
+        h = h[0].lower() + h[1:]
+    return f"which {h}?"
 
 
 # --- Skipping -----------------------------------------------------------------------

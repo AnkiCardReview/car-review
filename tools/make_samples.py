@@ -15,11 +15,16 @@ import lameenc
 import numpy as np
 from kokoro import KPipeline
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addon"))
+from car_review.speech import hint_phrase  # noqa: E402
+
 RATE = 24000
 OUT = Path(__file__).resolve().parent.parent / "docs" / "samples"
 
-# Made-up general-knowledge cards (not from any shared deck). "{blank}" is where the
-# blank tone plays; the hint, if any, is spoken right after the tone.
+# Made-up general-knowledge cards (not from any shared deck). "{blank}" is spoken as
+# "blank", or as the hint phrased as a question.
 CARDS = [
     ("The most common cause of community acquired pneumonia is {blank}.", None,
      "Streptococcus pneumoniae."),
@@ -40,12 +45,6 @@ def silence(secs: float) -> np.ndarray:
     return np.zeros(int(RATE * secs), dtype=np.float32)
 
 
-def blank_tone() -> np.ndarray:
-    """Short soft chime marking the blank: 880 Hz for 0.18 s with a fade in and out."""
-    t = np.arange(int(RATE * 0.18)) / RATE
-    envelope = np.minimum(1, np.minimum(t, t[::-1]) / 0.03)
-    return (0.25 * np.sin(2 * np.pi * 880 * t) * envelope).astype(np.float32)
-
 
 def speak(pipeline: KPipeline, voice: str, text: str) -> np.ndarray:
     chunks = [audio.numpy() for _, _, audio in pipeline(text, voice=voice, speed=1.0)]
@@ -53,18 +52,15 @@ def speak(pipeline: KPipeline, voice: str, text: str) -> np.ndarray:
 
 
 def card_audio(pipeline: KPipeline, voice: str, question: str, hint: str | None, answer: str) -> np.ndarray:
+    # The blank is said in words ("blank", or the hint as a question) and the whole
+    # question is spoken in one go, which sounds more natural than separate pieces.
+    blank = hint_phrase(hint) if hint else "blank"
     before, after = question.split("{blank}")
-    parts = []
-    if before.strip():
-        parts += [speak(pipeline, voice, before.strip()), silence(0.15)]
-    parts.append(blank_tone())
-    if hint:
-        parts += [silence(0.1), speak(pipeline, voice, hint)]
-    if after.strip(" ."):
-        parts += [silence(0.15), speak(pipeline, voice, after.strip())]
+    spoken = f"{before.strip()} {blank} {after.strip(' .')}".strip()
+    if not spoken.endswith(("?", ".")):
+        spoken += "."
     # In the app the answer plays when you press Forward; here it follows a short pause.
-    parts += [silence(1.2), speak(pipeline, voice, answer)]
-    return np.concatenate(parts)
+    return np.concatenate([speak(pipeline, voice, spoken), silence(1.2), speak(pipeline, voice, answer)])
 
 
 def to_mp3(audio: np.ndarray, path: Path) -> None:
@@ -78,6 +74,7 @@ def to_mp3(audio: np.ndarray, path: Path) -> None:
 
 
 def main() -> None:
+    only = [int(a) for a in sys.argv[1:]]  # optional: card numbers to remake, e.g. "2"
     OUT.mkdir(parents=True, exist_ok=True)
     pipelines: dict[str, KPipeline] = {}
     total_audio = total_time = 0.0
@@ -87,6 +84,8 @@ def main() -> None:
         started = time.perf_counter()
         audio_secs = 0.0
         for n, card in enumerate(CARDS, start=1):
+            if only and n not in only:
+                continue
             audio = card_audio(pipeline, voice, *card)
             audio_secs += len(audio) / RATE
             to_mp3(audio, OUT / f"{voice}-{n}.mp3")
