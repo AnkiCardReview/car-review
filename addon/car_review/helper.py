@@ -311,6 +311,9 @@ def main() -> None:
     sub.add_parser("engine", help="print which voice engine is installed (onnx, torch or none)")
     sub.add_parser("voice-check", help="make one short clip to check the voice works")
     sub.add_parser("fetch-grades", help="download and decrypt the phone's grades into the inbox folder")
+    sub.add_parser("morning", help="send today's exact list from Anki's scheduler (run by the daily task)")
+    sub.add_parser("schedule", help="create or update the daily morning-list task")
+    sub.add_parser("unschedule", help="remove the daily morning-list task")
     d = sub.add_parser("delete-grades", help="delete grade files from the relay once they're applied")
     d.add_argument("names", nargs="+")
     args = ap.parse_args()
@@ -355,6 +358,28 @@ def main() -> None:
         relay = Relay(load_pairing(create=False))
         for name in args.names:
             relay.session.delete(f"{relay.box}/{name}", timeout=60)
+    elif args.cmd == "morning":
+        from . import morning
+
+        try:
+            pack = morning.build_morning_pack()
+        except Exception as err:
+            write_status(state="error", error=f"morning list: {err}")
+            raise
+        settings = json.loads(morning.SETTINGS.read_text())
+        pack["voice_missing"] = bool(settings.get("auto_voice")) and on_charger()
+        path = HOME / "outbox" / "pack.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(pack), encoding="utf-8")
+        send(path, Progress("Car Review: morning list"))  # silent: no window at 4:30 am
+    elif args.cmd == "schedule":
+        from . import morning
+
+        print(morning.schedule(Path(sys.executable), Path(__file__).resolve().parent.parent))
+    elif args.cmd == "unschedule":
+        from . import morning
+
+        morning.unschedule()
 
 
 if __name__ == "__main__":

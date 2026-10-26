@@ -86,6 +86,33 @@ def start_send(pack: dict, voice: bool) -> None:
     PACK.parent.mkdir(parents=True, exist_ok=True)
     PACK.write_text(json.dumps(pack), encoding="utf-8")
     start_helper("send", "--pack", str(PACK))
+    remember_for_morning()
+
+
+def remember_for_morning() -> None:
+    """Save what the 4:30 am job needs (it runs without Anki), and set the job up the first time."""
+    from . import morning
+
+    try:
+        morning.save_settings(
+            profile=mw.pm.name,
+            collection=mw.pm.collectionPath(),
+            decks=setting("decks"),
+            days_ahead=int(setting("days_ahead")),
+            auto_voice=bool(setting("auto_voice")),
+            rollover=int(mw.col.get_config("rollover", 4)),
+        )
+        wanted = (mw.addonManager.getConfig(__name__) or {}).get("morning_job", True)
+        marker = HOME / "morning-task.json"
+        if wanted and not marker.exists():
+            result = run_helper("schedule")
+            if result.returncode == 0:
+                marker.write_text(json.dumps({"scheduled": result.stdout.strip()}))
+        elif not wanted and marker.exists():
+            run_helper("unschedule")
+            marker.unlink()
+    except Exception as err:  # never let this get in the way of sending
+        print(f"Car Review: couldn't set up the morning list: {err}")
 
 
 def build(col) -> dict:

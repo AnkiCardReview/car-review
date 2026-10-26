@@ -117,7 +117,11 @@
   function cardReady(c) { return audioReady.has(c.q_audio) && audioReady.has(c.a_audio); }
   // Every card carries the first Anki day it can be played (learning cards due today, interday
   // learning on their day, buried cards from tomorrow, reviews on their due day).
-  function isDueToday(c) { return c.due_day <= ankiDay(); }
+  // Only a list Anki made on the current Anki day is played: its "today" part is Anki's own
+  // study queue for the day (buried siblings, limits and order all Anki's). Cards for later days
+  // are sent ahead only so their audio downloads early; the morning list decides what's played.
+  const listIsToday = () => !!list && list.anki_today === ankiDay();
+  function isDueToday(c) { return listIsToday() && c.due_day <= list.anki_today; }
   function todaysCards() { return list ? list.cards.filter((c) => isDueToday(c) && !state.done[c.cid]) : []; }
 
   // ---------- Choosing the next card, the way Anki does ----------
@@ -306,6 +310,10 @@
     const total = state ? state.grades.length : 0;
     $('h-up').innerHTML = !state || !total ? '–' : state.uploaded >= total ? '<span class="ok">✓ all</span>' : `<span class="warn">${total - state.uploaded} waiting</span>`;
     $('start').disabled = !list || ready === 0;
+    if (list && !listIsToday()) {
+      message("Today's list isn't here yet. Your laptop makes it at 4:30 am if it's on and plugged in, "
+        + 'or when you open or close Anki. Cards sent ahead are already downloaded.');
+    }
   }
 
   // ---------- Audio player ----------
