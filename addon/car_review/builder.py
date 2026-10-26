@@ -4,7 +4,7 @@ turned into spoken text, plus what Again and Good do to each one.
 Uses only Anki's own Python API, so it runs the same inside Anki (the add-on) and on a
 copy of a collection (tools). It never changes the collection.
 
-    pack = build_pack(col, ["Past Blocks", "Uworld Wrongs"])
+    pack = build_pack(col, ["Deck A", "Deck B"])
 
 Each deck ("block") is played in full before the next, in the order given.
 - Today's cards come straight from Anki's study queue for that deck, so the order, limits
