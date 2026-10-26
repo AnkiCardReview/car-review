@@ -26,7 +26,6 @@ Nothing here needs an account, a terminal or any settings files.
 
 A few seconds after Anki restarts, the **Car Review setup** window opens by itself. It has six steps on the left; **Next** walks through them. You can open it again any time from **Tools ▸ Car Review ▸ Settings**.
 
-<!-- Screenshot placeholder: help/images/wizard-welcome.png -->
 ![The welcome step](images/wizard-welcome.png)
 
 ### Decks

@@ -6,7 +6,7 @@ Free and open source. No account, no app store, no subscription. Works with Anki
 
 | On your computer | On your phone |
 |---|---|
-| ![The Car Review setup window in Anki](help/images/wizard-decks.png) | ![The Car Review app on a phone](help/images/phone-intro.png) |
+| ![The Car Review setup window in Anki](help/images/wizard-decks.png) | ![The Car Review app on a phone](help/images/phone-intro.jpg) |
 
 ## Quick start (about 10 minutes)
 
