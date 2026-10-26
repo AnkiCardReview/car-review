@@ -226,7 +226,12 @@
     message('Checking for a new list…');
     try {
       const raw = await relayGet('list');
-      if (!raw) { message('No car list yet. In Anki, use Tools ▸ Car Review ▸ Send to Car.'); showHome(); return; }
+      if (!raw) {
+        message('Waiting for your first car list. On your computer, close Anki (or use Tools ▸ Car Review ▸ Send to Car). '
+          + 'The first time, your computer also makes the audio, which can take a while; cards appear here as they are ready.');
+        showHome();
+        return;
+      }
       const fresh = JSON.parse(dec.decode(raw));
       if (!list || fresh.made_at !== list.made_at || fresh.cards.length !== list.cards.length) {
         list = fresh;
@@ -236,12 +241,14 @@
       await loadState();
       await downloadAudio();
       await uploadGrades();
-      message(list.pending ? `Your laptop is still preparing ${list.pending} more cards. Check again later.`
-        : list.unvoiced ? `${list.unvoiced} more cards are waiting for audio on your laptop (Anki ▸ Tools ▸ Car Review ▸ Prepare audio).`
+      message(list.pending ? `Your computer is still preparing ${list.pending} more cards. Check again later.`
+        : list.unvoiced ? `${list.unvoiced} more cards are waiting for audio on your computer. Plug it in and close Anki, or use Anki ▸ Tools ▸ Car Review ▸ Prepare audio.`
+        : !todaysCards().length ? 'Nothing left to review today in your car decks. 🎉'
         : '');
     } catch (err) {
       log(`offline or relay error: ${err.message}`);
-      message(list ? 'Offline: using the list already on this phone.' : 'Offline, and no list on this phone yet.');
+      message(list ? 'Offline: using the cards already on this phone. Grades upload by themselves when you have signal.'
+        : 'No internet connection, and no cards on this phone yet. Connect to Wi-Fi and tap “Check for a new list”.');
     }
     showHome();
   }
@@ -277,11 +284,16 @@
   // ---------- Home screen ----------
   function message(text) { $('h-message').textContent = text; }
   function show(section) {
-    for (const id of ['unpaired', 'home', 'drive']) $(id).classList.toggle('hidden', id !== section);
+    for (const id of ['unpaired', 'intro', 'home', 'drive']) $(id).classList.toggle('hidden', id !== section);
   }
+  // On iPhone the Home Screen app has its own storage, so the walk-through waits until then.
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const introNeeded = () => localStorage.getItem('introDone') !== '1' && !(isIOS && !standalone);
   function showHome() {
     if (!keys) { show('unpaired'); return; }
     if (!$('drive').classList.contains('hidden')) return; // don't interrupt a drive
+    if (introNeeded()) { show('intro'); return; }
     show('home');
     const due = todaysCards();
     const ready = due.filter(cardReady).length;
@@ -466,7 +478,6 @@
     // A Home Screen app on iPhone gets its own storage, separate from Safari's, so in Safari the
     // code stays in the address: "Add to Home Screen" then saves it, and the Home Screen app
     // pairs itself when it first opens.
-    const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
     const m = location.hash.match(/pair=([A-Za-z0-9_-]{40,})/);
     if (m) {
       const old = await DB.get('kv', 'pairing');
@@ -475,6 +486,8 @@
       if (!old || old !== m[1]) log('paired with this laptop');
     }
     $('add-home').classList.toggle('hidden', standalone || !m);
+    $('add-home-ios').classList.toggle('hidden', !isIOS);
+    $('add-home-android').classList.toggle('hidden', isIOS);
     const code = await DB.get('kv', 'pairing');
     if (!code) { show('unpaired'); return; }
     // Ask the browser to keep our cards and audio even when storage gets tight.
@@ -489,6 +502,8 @@
 
   $('start').addEventListener('click', startDrive);
   $('refresh').addEventListener('click', refresh);
+  $('intro-done').addEventListener('click', () => { localStorage.setItem('introDone', '1'); showHome(); window.scrollTo(0, 0); });
+  $('show-intro').addEventListener('click', () => { localStorage.removeItem('introDone'); showHome(); window.scrollTo(0, 0); });
   $('d-fwd').addEventListener('click', forward);
   $('d-back').addEventListener('click', back);
   $('d-stop').addEventListener('click', stopDrive);

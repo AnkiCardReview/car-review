@@ -47,6 +47,13 @@
   .hidden { display: none !important; }
   details summary { cursor: pointer; color: var(--muted); }
   #log { font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
+  a { color: var(--accent); }
+  ol.steps { color: var(--muted); margin: 6px 0; padding-left: 22px; }
+  ol.steps li { margin: 6px 0; }
+  .links { text-align: center; font-size: 15px; margin: 14px 0; }
+  .stat { gap: 12px; }
+  .stat span { color: var(--muted); }
+  .stat b { text-align: right; }
 </style>
 </head>
 <body>
@@ -54,11 +61,50 @@
   <!-- Not paired yet -->
   <section id="unpaired" class="hidden">
     <h1>Car Review</h1>
+    <p>Hands-free flashcard reviews while you drive. This phone reads your due Anki cards out loud, and you answer with your car's steering-wheel buttons.</p>
     <div class="panel">
-      <p><b>Not set up yet.</b></p>
-      <p>On your computer, open Anki ▸ Tools ▸ Car Review ▸ <b>Pair phone</b>, then scan the QR code with this phone's camera.</p>
-      <p>Opened from the Home Screen and seeing this? Delete this icon, scan the QR code again, and use Share ▸ Add to Home Screen from the page that opens.</p>
+      <p><b style="color: var(--text)">To connect this phone</b></p>
+      <ol class="steps">
+        <li>On your computer, install the <b>Car Review</b> add-on in Anki (<a href="https://github.com/AnkiCardReview/car-review#readme">how</a>).</li>
+        <li>In Anki: <b>Tools ▸ Car Review ▸ Pair phone</b>. A QR code appears.</li>
+        <li>Point this phone's <b>Camera</b> at the code and tap the link.</li>
+      </ol>
+      <p>No account or app store needed.</p>
     </div>
+    <div class="panel">
+      <p><b style="color: var(--text)">Opened from your Home Screen and seeing this?</b></p>
+      <p>The icon was added before pairing. Delete the icon, scan the QR code again, and add to the Home Screen from the page that opens.</p>
+    </div>
+    <p class="links"><a href="https://github.com/AnkiCardReview/car-review/blob/main/help/how-it-works.md">How it works</a> · <a href="https://github.com/AnkiCardReview/car-review/blob/main/PRIVACY.md">Privacy</a> · <a href="test.html#practice">Try it with sample cards</a></p>
+  </section>
+
+  <!-- First run in the app: how the buttons work, and safety -->
+  <section id="intro" class="hidden">
+    <h1>Before your first drive</h1>
+    <div class="panel">
+      <p><b style="color: var(--text)">How to answer</b></p>
+      <div class="stat"><span>⏭ Next track</span><b>Hear the answer</b></div>
+      <div class="stat"><span>⏭ again</span><b class="ok">Good</b></div>
+      <div class="stat"><span>⏮ Previous track</span><b class="bad">Again</b></div>
+      <div class="stat"><span>⏮ before the answer</span><b>Repeat the question</b></div>
+      <div class="stat"><span>⏮⏮ quickly</span><b>Skip: doesn't work as audio</b></div>
+      <p>Works with steering-wheel buttons, AirPods (double-tap = ⏭, triple-tap = ⏮) and most Bluetooth headphones. Nothing plays on its own: after a question it waits as long as you like. A bright chime means Good, a low one means Again.</p>
+    </div>
+    <div class="panel">
+      <p><b style="color: var(--text)">Each drive</b></p>
+      <ol class="steps">
+        <li>Open Car Review before you leave (on Wi-Fi if you can) so it downloads the latest cards.</li>
+        <li>Connect to the car's Bluetooth. <b>Close Spotify or other music apps</b>, or they may take over the buttons.</li>
+        <li>Tap <b>Start</b>, lock the phone and put it away. Then drive.</li>
+        <li>When you arrive, open Anki on your computer. It shows your car answers and applies them.</li>
+      </ol>
+    </div>
+    <div class="panel" style="border-color: #f5c451">
+      <p><b class="warn">Safety</b></p>
+      <p>Set everything up and tap Start <b>before</b> you move. While driving, use only the steering-wheel buttons, and never look at or touch the phone. If a card needs thought, let it wait; the road comes first. Follow your local laws on phone use while driving.</p>
+    </div>
+    <button id="intro-done" class="primary">I understand</button>
+    <p class="links"><a href="test.html#practice">Practise with 4 sample cards first (parked)</a></p>
   </section>
 
   <!-- Home -->
@@ -66,7 +112,8 @@
     <h1>Car Review</h1>
     <div id="add-home" class="panel hidden" style="border-color: var(--accent)">
       <p><b style="color: var(--text)">Paired ✓ Next: add Car Review to your Home Screen.</b></p>
-      <p>Tap Share (□↑) ▸ <b>Add to Home Screen</b> ▸ Add, then open Car Review from your Home Screen. It pairs itself and downloads your cards there. You can close this Safari tab afterwards.</p>
+      <p id="add-home-ios">In Safari, tap Share (□↑) ▸ <b>Add to Home Screen</b> ▸ Add. Then open Car Review from your Home Screen: it pairs itself and downloads your cards there. You can close this Safari tab afterwards.</p>
+      <p id="add-home-android" class="hidden">In Chrome, tap ⋮ ▸ <b>Add to Home screen</b> (or <b>Install app</b>) ▸ Add. Then open Car Review from your Home Screen.</p>
     </div>
     <div class="panel">
       <div class="stat"><span>Cards for today</span><b id="h-due">–</b></div>
@@ -86,6 +133,8 @@
     </div>
     <details class="panel">
       <summary>More</summary>
+      <button id="show-intro">How the buttons work</button>
+      <p class="links"><a href="https://github.com/AnkiCardReview/car-review/blob/main/help/troubleshooting.md">Help &amp; troubleshooting</a> · <a href="https://github.com/AnkiCardReview/car-review/blob/main/PRIVACY.md">Privacy</a> · <a href="https://github.com/AnkiCardReview/car-review/blob/main/TERMS.md">Terms</a></p>
       <button id="clear-today">Reset today's progress on this phone</button>
       <button id="unpair">Unpair this phone</button>
       <div id="log"></div>
