@@ -62,6 +62,12 @@
     </div>
   </div>
 
+  <div class="panel">
+    <div id="space">Checking storage…</div>
+    <button id="delete">Delete downloaded voice</button>
+    <p style="font-size:14px">The voice is stored only in Safari's data for this website. You can also delete it in Settings ▸ Apps ▸ Safari ▸ Advanced ▸ Website Data ▸ ankicardreview.github.io.</p>
+  </div>
+
   <div class="panel"><div id="log"></div></div>
 </main>
 
@@ -115,6 +121,7 @@
       $('status').innerHTML = `<span class="ok">Voice ready</span> (${secs.toFixed(0)} s, ${device} ${dtype}). Next time it loads from the phone's storage.`;
       log(`loaded ${device} ${dtype} in ${secs.toFixed(1)}s`);
       $('run').disabled = false;
+      showSpace();
     } catch (e) {
       $('status').innerHTML = `<span class="bad">Couldn't load this engine:</span> ${e.message || e}`;
       log(`load failed (${device} ${dtype}): ${e.message || e}`);
@@ -167,6 +174,26 @@
     log(`TOTAL ${$('preset').value}: ${audioTotal.toFixed(1)}s audio in ${genTotal.toFixed(1)}s = ${rtf.toFixed(2)}x real time; ` +
       `~${perCard.toFixed(1)}s per real card; 200 cards ~${Math.round(200 * perCard / 60)} min`);
     $('run').disabled = false;
+  });
+
+  async function showSpace() {
+    try {
+      const { usage } = await navigator.storage.estimate();
+      $('space').textContent = `This website is using about ${Math.round(usage / 1e6)} MB on this phone.`;
+    } catch { $('space').textContent = "This browser doesn't report storage use."; }
+  }
+  showSpace();
+
+  $('delete').addEventListener('click', async () => {
+    // The voice files live in the browser's Cache Storage for this site.
+    for (const name of await caches.keys()) await caches.delete(name);
+    tts = null;
+    $('run').disabled = true;
+    $('load').disabled = false;
+    $('progress').value = 0;
+    $('status').textContent = 'Downloaded voice deleted.';
+    log('deleted downloaded voice');
+    showSpace();
   });
 
   $('copy').addEventListener('click', async () => {
