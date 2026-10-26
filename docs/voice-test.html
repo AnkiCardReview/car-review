@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Car Review Voice Test</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --text: #eef0f4; --muted: #9aa1ad;
+    --accent: #4f8cff; --good: #3ccf7a; --bad: #ff6b5e; --border: #2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px 40px;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 8px 0 4px; }
+  p, li { color: var(--muted); }
+  a { color: var(--accent); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin: 12px 0; }
+  button {
+    font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; width: 100%; margin: 6px 0; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: 0.5; }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); }
+  select { width: 100%; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+  progress { width: 100%; height: 14px; }
+  #status { margin: 8px 0; }
+  #summary { font-size: 20px; font-weight: 700; margin: 8px 0; }
+  .card { border-top: 1px solid var(--border); padding: 10px 0; }
+  .card small { color: var(--muted); display: block; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .ok { color: var(--good); } .bad { color: var(--bad); }
+  #log { font: 13px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Car Review · Phone Voice Test</h1>
+  <p>Can your iPhone make the natural voice (Heart) itself? This downloads the voice once (on Wi-Fi), makes 4 sample cards on the phone and times it. Keep this page open with the screen on while it runs. <a href="./">← Button test</a></p>
+
+  <div class="panel">
+    <label for="preset">Engine</label>
+    <select id="preset">
+      <option value="wasm:q8">Processor · small model (92 MB)</option>
+      <option value="webgpu:fp32">Graphics chip · full model (326 MB)</option>
+      <option value="webgpu:fp16">Graphics chip · half-size model (163 MB)</option>
+    </select>
+    <button id="load" class="primary">1. Download voice</button>
+    <progress id="progress" max="100" value="0"></progress>
+    <div id="status">Not started.</div>
+    <button id="run" disabled>2. Run speed test</button>
+    <div id="summary"></div>
+    <div id="cards"></div>
+    <div class="row">
+      <button id="copy">Copy results</button>
+    </div>
+  </div>
+
+  <div class="panel"><div id="log"></div></div>
+</main>
+
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const VOICE = 'af_heart';
+  // Same made-up cards as the button test page.
+  const CARDS = [
+    ['The most common cause of community acquired pneumonia is blank.', 'Streptococcus pneumoniae.'],
+    ['First line treatment for anaphylaxis is which drug?', 'Intramuscular epinephrine.'],
+    ['In hyperkalemia, the E C G shows peaked T waves. The first step to protect the heart is blank.', 'I V calcium gluconate.'],
+    ['The two most common causes of acute pancreatitis are blank and blank.', 'Gallstones, and alcohol.'],
+  ];
+  const REAL_AUDIO_PER_CARD = 11;  // seconds of speech per real card, measured on the laptop
+  const lines = [];
+  let tts = null;
+  let wakeLock = null;
+
+  function log(text) {
+    lines.push(`${new Date().toLocaleTimeString()}  ${text}`);
+    $('log').textContent = lines.join('\n');
+  }
+  async function keepAwake() {
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not supported */ }
+  }
+
+  log(`device: ${navigator.userAgent.replace(/^Mozilla\/5\.0 /, '')}`);
+  log(`graphics chip available to web pages: ${'gpu' in navigator ? 'yes' : 'no'}`);
+
+  $('load').addEventListener('click', async () => {
+    const [device, dtype] = $('preset').value.split(':');
+    $('load').disabled = true;
+    $('status').textContent = 'Loading the voice engine…';
+    await keepAwake();
+    const started = performance.now();
+    const files = {};
+    try {
+      const { KokoroTTS } = await import('https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm');
+      tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
+        dtype, device,
+        progress_callback: (p) => {
+          if (p.status !== 'progress' || !p.total) return;
+          files[p.file] = [p.loaded, p.total];
+          const [done, total] = Object.values(files).reduce((a, [l, t]) => [a[0] + l, a[1] + t], [0, 0]);
+          $('progress').value = Math.round(100 * done / total);
+          $('status').textContent = `Downloading voice… ${Math.round(done / 1e6)} of ${Math.round(total / 1e6)} MB`;
+        },
+      });
+      const secs = (performance.now() - started) / 1000;
+      $('progress').value = 100;
+      $('status').innerHTML = `<span class="ok">Voice ready</span> (${secs.toFixed(0)} s, ${device} ${dtype}). Next time it loads from the phone's storage.`;
+      log(`loaded ${device} ${dtype} in ${secs.toFixed(1)}s`);
+      $('run').disabled = false;
+    } catch (e) {
+      $('status').innerHTML = `<span class="bad">Couldn't load this engine:</span> ${e.message || e}`;
+      log(`load failed (${device} ${dtype}): ${e.message || e}`);
+      $('load').disabled = false;
+    }
+  });
+
+  $('run').addEventListener('click', async () => {
+    $('run').disabled = true;
+    $('cards').innerHTML = '';
+    $('summary').textContent = '';
+    await keepAwake();
+    // Warm up so the first card isn't slowed by one-time setup.
+    $('status').textContent = 'Warming up…';
+    await tts.generate('Warm up.', { voice: VOICE });
+    let genTotal = 0, audioTotal = 0;
+    for (const [i, [question, answer]] of CARDS.entries()) {
+      $('status').textContent = `Making card ${i + 1} of ${CARDS.length}…`;
+      const clips = [];
+      for (const text of [question, answer]) {
+        const t0 = performance.now();
+        const audio = await tts.generate(text, { voice: VOICE });
+        const gen = (performance.now() - t0) / 1000;
+        const len = audio.audio.length / audio.sampling_rate;
+        genTotal += gen;
+        audioTotal += len;
+        clips.push({ text, gen, len, url: URL.createObjectURL(audio.toBlob()) });
+      }
+      const gen = clips[0].gen + clips[1].gen, len = clips[0].len + clips[1].len;
+      log(`card ${i + 1}: ${len.toFixed(1)}s of audio in ${gen.toFixed(1)}s (${(len / gen).toFixed(1)}x real time)`);
+      const div = document.createElement('div');
+      div.className = 'card';
+      div.innerHTML = `${clips[0].text}<small>${len.toFixed(1)} s of speech made in ${gen.toFixed(1)} s</small>`;
+      const play = document.createElement('button');
+      play.textContent = '▶ Play question and answer';
+      play.onclick = () => {
+        const a = new Audio(clips[0].url);
+        a.onended = () => setTimeout(() => new Audio(clips[1].url).play(), 600);
+        a.play();
+      };
+      div.appendChild(play);
+      $('cards').appendChild(div);
+    }
+    const rtf = audioTotal / genTotal;
+    const perCard = REAL_AUDIO_PER_CARD / rtf;
+    $('summary').innerHTML =
+      `${rtf.toFixed(1)}× real time · about ${perCard.toFixed(1)} s per real card<br>` +
+      `200 cards ≈ ${Math.round(200 * perCard / 60)} min · 40 new cards ≈ ${Math.round(40 * perCard / 60)} min`;
+    $('status').textContent = 'Done. Tap a card to hear it, then Copy results.';
+    log(`TOTAL ${$('preset').value}: ${audioTotal.toFixed(1)}s audio in ${genTotal.toFixed(1)}s = ${rtf.toFixed(2)}x real time; ` +
+      `~${perCard.toFixed(1)}s per real card; 200 cards ~${Math.round(200 * perCard / 60)} min`);
+    $('run').disabled = false;
+  });
+
+  $('copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(['Car Review phone voice test', ...lines].join('\n')); $('copy').textContent = 'Copied ✓'; }
+    catch { $('copy').textContent = 'Copy failed — select the log text instead'; }
+    setTimeout(() => { $('copy').textContent = 'Copy results'; }, 2500);
+  });
+</script>
+</body>
+</html>
