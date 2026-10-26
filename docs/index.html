@@ -87,6 +87,23 @@
     </div>
   </div>
 
+  <h2>Natural voice samples</h2>
+  <p>Three made-up cards per voice: the question, a short chime for the blank, then the answer. With "How it talks" set to Recorded clips, ⏭ plays the next sample card and ⏮ repeats it, which works while locked too.</p>
+  <div class="panel">
+    <label for="sample-voice">Voice</label>
+    <select id="sample-voice">
+      <option value="af_heart">Heart · American, female</option>
+      <option value="af_bella">Bella · American, female</option>
+      <option value="am_michael">Michael · American, male</option>
+      <option value="am_fenrir">Fenrir · American, male</option>
+      <option value="bf_emma">Emma · British, female</option>
+      <option value="bm_george">George · British, male</option>
+    </select>
+    <label for="clip-rate">Clip speed: <span id="clip-rate-val">1.2</span>×</label>
+    <input id="clip-rate" type="range" min="0.8" max="2.0" step="0.1" value="1.2">
+    <button id="play-samples">Play all 3 sample cards</button>
+  </div>
+
   <h2>Tests</h2>
   <ol>
     <li><b>Screen on:</b> tap Start, then use the ⏭ / ⏮ buttons in Control Center. You should hear "Forward" or "Back".</li>
@@ -165,12 +182,31 @@
     player.play().catch(playFailed);
   }
 
-  function playClip(name) {
+  function playUrl(url) {
+    const rate = Number($('clip-rate').value);
     player.loop = false;
-    player.src = `clips/${name}.wav`;
+    player.src = url;
+    // Changing src resets playbackRate to the default, so set both.
+    player.defaultPlaybackRate = rate;
+    player.playbackRate = rate;
+    player.preservesPitch = true;
     player.play().catch(playFailed);
   }
-  player.addEventListener('ended', () => { if (!player.loop) playSilence(); });
+  const playClip = (name) => playUrl(`clips/${name}.wav`);
+
+  // Natural voice samples: queued files play back to back, then the silent loop resumes.
+  const queue = [];
+  let sampleIndex = 0;
+  const sampleUrl = (n) => `samples/${$('sample-voice').value}-${n}.mp3`;
+  function playSample(n) {
+    sampleIndex = n;
+    queue.length = 0;
+    playUrl(sampleUrl(n));
+  }
+  player.addEventListener('ended', () => {
+    if (player.loop) return;
+    if (queue.length) playUrl(queue.shift()); else playSilence();
+  });
 
   // Diagnostics: when the audio stops or the screen changes, and when the page was frozen.
   for (const type of ['pause', 'stalled', 'error']) {
@@ -196,8 +232,11 @@
   }
 
   function say(name) {
-    if ($('mode').value === 'clips') playClip(clipFor[name] || 'forward');
-    else speak(labels[name] || name);
+    if ($('mode').value !== 'clips') { speak(labels[name] || name); return; }
+    // In clips mode, Forward/Back act like the real app: next sample card / repeat it.
+    if (name === 'nexttrack') playSample(sampleIndex % 3 + 1);
+    else if (name === 'previoustrack') playSample(sampleIndex || 1);
+    else playClip(clipFor[name] || 'forward');
   }
 
   function setTitle(text) {
@@ -285,9 +324,21 @@
   $('seek').addEventListener('change', () => { if (started) registerHandlers(); note('hold-listening', String($('seek').checked)); });
 
   function readSample() {
-    note('sample');
-    if ($('mode').value === 'clips') playClip('sample'); else speak(sampleText);
+    note('sample', $('mode').value === 'clips' ? $('sample-voice').value : '');
+    if ($('mode').value === 'clips') playSample(1); else speak(sampleText);
   }
+  $('play-samples').addEventListener('click', () => {
+    note('voice-samples', `${$('sample-voice').value} at ${$('clip-rate').value}x`);
+    if (!started) $('start').click();
+    playSample(1);
+    queue.push(sampleUrl(2), sampleUrl(3));
+  });
+  $('clip-rate').addEventListener('input', () => {
+    const rate = Number($('clip-rate').value);
+    $('clip-rate-val').textContent = rate.toFixed(1);
+    if (!player.loop) player.playbackRate = rate;
+  });
+  $('sample-voice').addEventListener('change', () => note('voice-chosen', $('sample-voice').value));
   $('sample').addEventListener('click', readSample);
   $('delayed').addEventListener('click', () => {
     note('sample-in-10s');
