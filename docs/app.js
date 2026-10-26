@@ -466,6 +466,8 @@
     }
     const code = await DB.get('kv', 'pairing');
     if (!code) { show('unpaired'); return; }
+    // Ask the browser to keep our cards and audio even when storage gets tight.
+    navigator.storage?.persist?.().catch(() => {});
     keys = await makeKeys(code);
     list = (await DB.get('kv', 'list')) || null;
     audioReady = new Set(await DB.keys('audio'));
