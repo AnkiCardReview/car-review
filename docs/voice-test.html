@@ -48,8 +48,8 @@
     <label for="preset">Engine</label>
     <select id="preset">
       <option value="wasm:q8">Processor · small model (92 MB)</option>
-      <option value="webgpu:fp32">Graphics chip · full model (326 MB)</option>
-      <option value="webgpu:fp16">Graphics chip · half-size model (163 MB)</option>
+      <option value="webgpu:fp16">Graphics chip · half-size model (163 MB, uses less memory)</option>
+      <option value="webgpu:fp32">Graphics chip · full model (326 MB, may crash on phones)</option>
     </select>
     <button id="load" class="primary">1. Download voice</button>
     <progress id="progress" max="100" value="0"></progress>
@@ -86,19 +86,35 @@
   let tts = null;
   let wakeLock = null;
 
+  // The log is saved after every line, so if Safari reloads the page (for example when it
+  // runs out of memory) the previous run is still there to read and copy.
+  const SAVED = 'carReviewVoiceTest';
+  let previous = [];
+  try { previous = JSON.parse(localStorage.getItem(SAVED) || '[]'); } catch { /* storage unavailable */ }
+  // Only start overwriting the saved run once a new download or test begins, so just
+  // opening or reloading the page never loses the last results.
+  let saving = false;
   function log(text) {
     lines.push(`${new Date().toLocaleTimeString()}  ${text}`);
-    $('log').textContent = lines.join('\n');
+    if (saving) try { localStorage.setItem(SAVED, JSON.stringify(lines)); } catch { /* storage unavailable */ }
+    $('log').textContent = [...lines, ...(previous.length ? ['', '— previous run —', ...previous] : [])].join('\n');
   }
   async function keepAwake() {
     try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not supported */ }
   }
 
+  if (previous.length) {
+    const crashed = !previous.some((l) => l.includes('TOTAL'));
+    $('status').textContent = crashed
+      ? 'The last run stopped partway (the page probably reloaded). Its results are in the log below.'
+      : 'The last run finished. Its results are in the log below.';
+  }
   log(`device: ${navigator.userAgent.replace(/^Mozilla\/5\.0 /, '')}`);
   log(`graphics chip available to web pages: ${'gpu' in navigator ? 'yes' : 'no'}`);
 
   $('load').addEventListener('click', async () => {
     const [device, dtype] = $('preset').value.split(':');
+    saving = true;
     $('load').disabled = true;
     $('status').textContent = 'Loading the voice engine…';
     await keepAwake();
@@ -197,7 +213,7 @@
   });
 
   $('copy').addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(['Car Review phone voice test', ...lines].join('\n')); $('copy').textContent = 'Copied ✓'; }
+    try { await navigator.clipboard.writeText(['Car Review phone voice test', $('log').textContent].join('\n')); $('copy').textContent = 'Copied ✓'; }
     catch { $('copy').textContent = 'Copy failed — select the log text instead'; }
     setTimeout(() => { $('copy').textContent = 'Copy results'; }, 2500);
   });
