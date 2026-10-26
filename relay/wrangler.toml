@@ -1,0 +1,18 @@
+name = "car-review-relay"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Free plan only. No payment method is ever added to this account, so going over a
+# free limit makes requests fail until the next day instead of costing money.
+
+[vars]
+ALLOWED_ORIGINS = "https://ankicardreview.github.io,http://localhost:8765"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "car-review-relay"
+database_id = "d9829b66-fc7e-47f4-a720-2a116aa0fc28"
+
+# Delete files older than 3 days, every day at 09:00 UTC.
+[triggers]
+crons = ["0 9 * * *"]
