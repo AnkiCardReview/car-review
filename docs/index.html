@@ -96,15 +96,7 @@
   </ul>
   <div class="panel">
     <div id="practice-status" style="text-align:center;font-weight:600;margin-bottom:8px">Not started</div>
-    <label for="sample-voice">Voice</label>
-    <select id="sample-voice">
-      <option value="af_heart">Heart · American, female</option>
-      <option value="af_bella">Bella · American, female</option>
-      <option value="am_michael">Michael · American, male</option>
-      <option value="am_fenrir">Fenrir · American, male</option>
-      <option value="bf_emma">Emma · British, female</option>
-      <option value="bm_george">George · British, male</option>
-    </select>
+    <input id="sample-voice" type="hidden" value="af_heart">
     <label for="clip-rate">Clip speed: <span id="clip-rate-val">1.2</span>×</label>
     <input id="clip-rate" type="range" min="0.8" max="2.0" step="0.1" value="1.2">
     <button id="practice" class="primary">Start practice</button>
@@ -387,7 +379,6 @@
     $('clip-rate-val').textContent = rate.toFixed(1);
     if (!player.loop) player.playbackRate = rate;
   });
-  $('sample-voice').addEventListener('change', () => note('voice-chosen', $('sample-voice').value));
   $('sample').addEventListener('click', readSample);
   $('delayed').addEventListener('click', () => {
     note('sample-in-10s');

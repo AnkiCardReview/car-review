@@ -39,10 +39,7 @@ CARDS = [
 ]
 
 # lang_code 'a' = American English, 'b' = British English.
-VOICES = {
-    "af_heart": "a", "af_bella": "a", "am_michael": "a", "am_fenrir": "a",
-    "bf_emma": "b", "bm_george": "b",
-}
+VOICES = {"af_heart": "a"}  # the voice chosen for Car Review
 
 
 def speak(pipeline: KPipeline, voice: str, text: str) -> np.ndarray:
