@@ -87,9 +87,15 @@
     </div>
   </div>
 
-  <h2>Natural voice samples</h2>
-  <p>Three made-up cards per voice: the question (the blank is said as "blank", or as the hint, like "which drug?"), then the answer. With "How it talks" set to Recorded clips, ⏭ plays the next sample card and ⏮ repeats it, which works while locked too.</p>
+  <h2>Practice (works like the real app)</h2>
+  <p>Four made-up cards. It reads the question and waits. Say your answer out loud, then:</p>
+  <ul>
+    <li><b>⏭ Forward:</b> hear the answer (on the two-blank card, one blank per press). After the last answer, ⏭ = <b>Good</b> and the next card starts.</li>
+    <li><b>⏮ Back:</b> before the answer, repeats the question. After the last answer, ⏮ = <b>Again</b>.</li>
+    <li>Pressing either button cuts off whatever is playing. Works with the phone locked.</li>
+  </ul>
   <div class="panel">
+    <div id="practice-status" style="text-align:center;font-weight:600;margin-bottom:8px">Not started</div>
     <label for="sample-voice">Voice</label>
     <select id="sample-voice">
       <option value="af_heart">Heart · American, female</option>
@@ -101,7 +107,7 @@
     </select>
     <label for="clip-rate">Clip speed: <span id="clip-rate-val">1.2</span>×</label>
     <input id="clip-rate" type="range" min="0.8" max="2.0" step="0.1" value="1.2">
-    <button id="play-samples">Play all 3 sample cards</button>
+    <button id="practice" class="primary">Start practice</button>
   </div>
 
   <h2>Tests</h2>
@@ -194,19 +200,54 @@
   }
   const playClip = (name) => playUrl(`clips/${name}.wav`);
 
-  // Natural voice samples: queued files play back to back, then the silent loop resumes.
+  // When a clip ends: run the follow-up step if there is one (e.g. "Good." then the next
+  // question), else play any queued clip, else go back to the silent loop and wait.
   const queue = [];
-  let sampleIndex = 0;
-  const sampleUrl = (n) => `samples/${$('sample-voice').value}-${n}.mp3`;
-  function playSample(n) {
-    sampleIndex = n;
-    queue.length = 0;
-    playUrl(sampleUrl(n));
-  }
+  let afterClip = null;
   player.addEventListener('ended', () => {
     if (player.loop) return;
+    if (afterClip) { const next = afterClip; afterClip = null; next(); return; }
     if (queue.length) playUrl(queue.shift()); else playSilence();
   });
+
+  // Practice: question -> wait -> Forward reveals each blank -> Forward = Good / Back = Again.
+  let blanksPerCard = [1, 1, 1, 2];
+  fetch('samples/cards.json').then((r) => r.json()).then((v) => { blanksPerCard = v; }).catch(() => {});
+  const practice = { on: false, card: 0, revealed: 0 };
+  const sample = (name) => `samples/${$('sample-voice').value}-${name}.mp3`;
+  function practiceStatus(text) {
+    $('practice-status').textContent = text;
+    setTitle(text);
+  }
+  function askCard(i) {
+    practice.card = i % blanksPerCard.length;
+    practice.revealed = 0;
+    afterClip = null;
+    queue.length = 0;
+    playUrl(sample(`${practice.card + 1}-q`));
+    practiceStatus(`Card ${practice.card + 1} of ${blanksPerCard.length} · say your answer, then ⏭`);
+  }
+  function practiceForward() {
+    const total = blanksPerCard[practice.card];
+    if (practice.revealed >= total) { grade('good'); return; }
+    practice.revealed++;
+    afterClip = null;
+    playUrl(sample(`${practice.card + 1}-a${practice.revealed}`));
+    practiceStatus(practice.revealed < total
+      ? `Blank ${practice.revealed} of ${total} · ⏭ next blank`
+      : `Answer · ⏭ Good   ⏮ Again`);
+  }
+  function practiceBack() {
+    if (practice.revealed >= blanksPerCard[practice.card]) grade('again');
+    else askCard(practice.card);
+  }
+  function grade(result) {
+    note(`graded-${result}`, `card ${practice.card + 1}`);
+    const next = practice.card + 1;
+    playUrl(sample(result));
+    practiceStatus(result === 'good' ? 'Good ✓' : 'Again ↺');
+    afterClip = () => askCard(next);
+  }
 
   // Diagnostics: when the audio stops or the screen changes, and when the page was frozen.
   for (const type of ['pause', 'stalled', 'error']) {
@@ -232,10 +273,9 @@
   }
 
   function say(name) {
-    if ($('mode').value !== 'clips') { speak(labels[name] || name); return; }
-    // In clips mode, Forward/Back act like the real app: next sample card / repeat it.
-    if (name === 'nexttrack') playSample(sampleIndex % 3 + 1);
-    else if (name === 'previoustrack') playSample(sampleIndex || 1);
+    if (practice.on && name === 'nexttrack') { practiceForward(); return; }
+    if (practice.on && name === 'previoustrack') { practiceBack(); return; }
+    if ($('mode').value !== 'clips') speak(labels[name] || name);
     else playClip(clipFor[name] || 'forward');
   }
 
@@ -299,7 +339,7 @@
   speechSynthesis.onvoiceschanged = loadVoices;
   loadVoices();
 
-  $('start').addEventListener('click', () => {
+  $('start').addEventListener('click', (event) => {
     started = true;
     playSilence();
     registerHandlers();
@@ -308,7 +348,9 @@
     $('live').classList.remove('hidden');
     lastPress = Date.now();
     note('started', navigator.userAgent.replace(/^Mozilla\/5\.0 /, ''));
-    if ($('mode').value === 'clips') playClip('ready'); else speak('Ready. Press forward or back.');
+    if (event.detail === 'practice') { /* practice starts with its own question */ }
+    else if ($('mode').value === 'clips') playClip('ready');
+    else speak('Ready. Press forward or back.');
     setInterval(() => {
       const s = Math.floor((Date.now() - lastPress) / 1000);
       $('quiet').textContent = `Quiet for ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -325,13 +367,20 @@
 
   function readSample() {
     note('sample', $('mode').value === 'clips' ? $('sample-voice').value : '');
-    if ($('mode').value === 'clips') playSample(1); else speak(sampleText);
+    if ($('mode').value !== 'clips') { speak(sampleText); return; }
+    afterClip = null;
+    playUrl(sample('1-q'));
+    queue.length = 0;
+    queue.push(sample('1-a1'));
   }
-  $('play-samples').addEventListener('click', () => {
-    note('voice-samples', `${$('sample-voice').value} at ${$('clip-rate').value}x`);
-    if (!started) $('start').click();
-    playSample(1);
-    queue.push(sampleUrl(2), sampleUrl(3));
+  $('practice').addEventListener('click', () => {
+    $('mode').value = 'clips';
+    $('mode').dispatchEvent(new Event('change'));
+    if (!started) $('start').dispatchEvent(new CustomEvent('click', { detail: 'practice' }));
+    practice.on = true;
+    $('practice').textContent = 'Restart practice';
+    note('practice', `${$('sample-voice').value} at ${$('clip-rate').value}x`);
+    askCard(0);
   });
   $('clip-rate').addEventListener('input', () => {
     const rate = Number($('clip-rate').value);
@@ -352,6 +401,9 @@
     setTimeout(() => { $('copy').textContent = 'Copy results'; }, 2500);
   });
   $('clear').addEventListener('click', () => { entries.length = 0; $('log').textContent = 'Nothing yet.'; });
+
+  // Lets a desktop browser (with no media keys) simulate the buttons while testing the page.
+  window.carReviewTest = { forward: () => onAction('nexttrack'), back: () => onAction('previoustrack') };
 })();
 </script>
 </body>

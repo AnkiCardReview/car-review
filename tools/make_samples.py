@@ -3,11 +3,15 @@
 Run with the Car Review Python environment:
     python tools/make_samples.py
 
-Writes docs/samples/<voice>-<n>.mp3 and prints the generation speed for each voice.
+Writes, for each voice, docs/samples/<voice>-<card>-q.mp3 (the question),
+<voice>-<card>-a<k>.mp3 (the answer to blank k) and <voice>-good.mp3 / <voice>-again.mp3,
+and prints the generation speed.
 """
 
 from __future__ import annotations
 
+import json
+import sys
 import time
 from pathlib import Path
 
@@ -15,23 +19,23 @@ import lameenc
 import numpy as np
 from kokoro import KPipeline
 
-import sys
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addon"))
 from car_review.speech import hint_phrase  # noqa: E402
 
 RATE = 24000
 OUT = Path(__file__).resolve().parent.parent / "docs" / "samples"
 
-# Made-up general-knowledge cards (not from any shared deck). "{blank}" is spoken as
-# "blank", or as the hint phrased as a question.
+# Made-up general-knowledge cards (not from any shared deck): question with one
+# "{blank}" per answer, the hint for each blank (or None), and the answers.
 CARDS = [
-    ("The most common cause of community acquired pneumonia is {blank}.", None,
-     "Streptococcus pneumoniae."),
-    ("First line treatment for anaphylaxis is {blank}.", "drug",
-     "Intramuscular epinephrine."),
+    ("The most common cause of community acquired pneumonia is {blank}.", [None],
+     ["Streptococcus pneumoniae."]),
+    ("First line treatment for anaphylaxis is {blank}.", ["drug"],
+     ["Intramuscular epinephrine."]),
     ("In hyperkalemia, the E C G shows peaked T waves. The first step to protect the heart is {blank}.",
-     None, "I V calcium gluconate."),
+     [None], ["I V calcium gluconate."]),
+    ("The two most common causes of acute pancreatitis are {blank} and {blank}.", [None, None],
+     ["Gallstones.", "Alcohol."]),
 ]
 
 # lang_code 'a' = American English, 'b' = British English.
@@ -41,26 +45,19 @@ VOICES = {
 }
 
 
-def silence(secs: float) -> np.ndarray:
-    return np.zeros(int(RATE * secs), dtype=np.float32)
-
-
-
 def speak(pipeline: KPipeline, voice: str, text: str) -> np.ndarray:
     chunks = [audio.numpy() for _, _, audio in pipeline(text, voice=voice, speed=1.0)]
-    return np.concatenate(chunks) if chunks else silence(0)
+    return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
 
 
-def card_audio(pipeline: KPipeline, voice: str, question: str, hint: str | None, answer: str) -> np.ndarray:
-    # The blank is said in words ("blank", or the hint as a question) and the whole
-    # question is spoken in one go, which sounds more natural than separate pieces.
-    blank = hint_phrase(hint) if hint else "blank"
-    before, after = question.split("{blank}")
-    spoken = f"{before.strip()} {blank} {after.strip(' .')}".strip()
-    if not spoken.endswith(("?", ".")):
-        spoken += "."
-    # In the app the answer plays when you press Forward; here it follows a short pause.
-    return np.concatenate([speak(pipeline, voice, spoken), silence(1.2), speak(pipeline, voice, answer)])
+def question_text(question: str, hints: list[str | None]) -> str:
+    """The whole question as one sentence, each blank said as "blank" or as its hint question."""
+    pieces = question.split("{blank}")
+    out = pieces[0]
+    for hint, piece in zip(hints, pieces[1:]):
+        out += f" {hint_phrase(hint) if hint else 'blank'} {piece}"
+    out = " ".join(out.split()).replace(" .", ".")
+    return out if out.endswith(("?", ".")) else out + "."
 
 
 def to_mp3(audio: np.ndarray, path: Path) -> None:
@@ -74,25 +71,30 @@ def to_mp3(audio: np.ndarray, path: Path) -> None:
 
 
 def main() -> None:
-    only = [int(a) for a in sys.argv[1:]]  # optional: card numbers to remake, e.g. "2"
     OUT.mkdir(parents=True, exist_ok=True)
+    for old in OUT.glob("*.mp3"):
+        old.unlink()
     pipelines: dict[str, KPipeline] = {}
-    total_audio = total_time = 0.0
+    total_time = 0.0
     for voice, lang in VOICES.items():
         pipeline = pipelines.setdefault(lang, KPipeline(lang_code=lang, repo_id="hexgrad/Kokoro-82M"))
         speak(pipeline, voice, "Warm up.")  # load the voice before timing
         started = time.perf_counter()
         audio_secs = 0.0
-        for n, card in enumerate(CARDS, start=1):
-            if only and n not in only:
-                continue
-            audio = card_audio(pipeline, voice, *card)
-            audio_secs += len(audio) / RATE
-            to_mp3(audio, OUT / f"{voice}-{n}.mp3")
+        for n, (question, hints, answers) in enumerate(CARDS, start=1):
+            clips = {"q": speak(pipeline, voice, question_text(question, hints))}
+            for k, answer in enumerate(answers, start=1):
+                clips[f"a{k}"] = speak(pipeline, voice, answer)
+            for name, audio in clips.items():
+                audio_secs += len(audio) / RATE
+                to_mp3(audio, OUT / f"{voice}-{n}-{name}.mp3")
         took = time.perf_counter() - started
-        total_audio += audio_secs
         total_time += took
-        print(f"{voice}: {audio_secs:.1f}s of audio in {took:.1f}s ({audio_secs / took:.1f}x faster than real time)")
+        for word in ("good", "again"):
+            to_mp3(speak(pipeline, voice, word.capitalize() + "."), OUT / f"{voice}-{word}.mp3")
+        print(f"{voice}: {audio_secs:.1f}s of audio in {took:.1f}s ({audio_secs / took:.1f}x real time)")
+    # The test page reads how many blanks each sample card has from here.
+    (OUT / "cards.json").write_text(json.dumps([len(a) for _, _, a in CARDS]))
     per_card = total_time / (len(VOICES) * len(CARDS))
     print(f"average {per_card:.2f}s to make one card; 200 cards would take about {200 * per_card / 60:.1f} min")
 
