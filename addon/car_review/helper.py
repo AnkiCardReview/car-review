@@ -29,6 +29,7 @@ HOME = Path.home() / "CarReview"
 CACHE = HOME / "audio-cache"
 STATUS = HOME / "status.json"
 PAIRING = HOME / "pairing.json"
+INBOX = HOME / "inbox"  # decrypted grade files waiting to be applied
 RELAY = "https://car-review-relay.ankicardreview.workers.dev/v1"
 APP_URL = "https://ankicardreview.github.io/car-review/"
 RATE = 24000
@@ -182,6 +183,9 @@ def main() -> None:
     q = sub.add_parser("qr", help="save the pairing QR code as a PNG")
     q.add_argument("--out", type=Path, required=True)
     sub.add_parser("repair", help="forget the old phone: delete its box and make a new pairing")
+    sub.add_parser("fetch-grades", help="download and decrypt the phone's grades into the inbox folder")
+    d = sub.add_parser("delete-grades", help="delete grade files from the relay once they're applied")
+    d.add_argument("names", nargs="+")
     args = ap.parse_args()
     if args.cmd == "send":
         send(args.pack)
@@ -201,6 +205,21 @@ def main() -> None:
             PAIRING.unlink()
         load_pairing()
         print("new pairing made; scan the new QR code on your phone")
+    elif args.cmd == "fetch-grades":
+        relay = Relay(load_pairing(create=False))
+        INBOX.mkdir(parents=True, exist_ok=True)
+        for old in INBOX.glob("*.json"):
+            old.unlink()
+        names = sorted(relay.names("grades/"))
+        for name in names:
+            data = relay.get(name)
+            if data is not None:
+                (INBOX / (name.replace("/", "_") + ".json")).write_bytes(data)
+        print(json.dumps(names))
+    elif args.cmd == "delete-grades":
+        relay = Relay(load_pairing(create=False))
+        for name in args.names:
+            relay.session.delete(f"{relay.box}/{name}", timeout=60)
 
 
 if __name__ == "__main__":

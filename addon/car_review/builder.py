@@ -182,6 +182,9 @@ def _sort_reviews(col: Collection, cids: list[int], conf: dict, on_day: int) -> 
 
 def _card_entry(col, card, kind, again, good, block, deck_name, today, skipped) -> dict | None:
     note = card.note()
+    if note.has_tag("car-review::skip"):  # double-Back in the car: "doesn't work as audio"
+        skipped["marked not audio-friendly"] = skipped.get("marked not audio-friendly", 0) + 1
+        return None
     notetype = note.note_type()
     if notetype["type"] != 1:  # MODEL_CLOZE
         skipped["not a cloze card"] = skipped.get("not a cloze card", 0) + 1

@@ -17,11 +17,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+from anki.collection import OpChanges
 from aqt import mw
-from aqt.operations import QueryOp
-from aqt.qt import QAction, QDialog, QLabel, QMenu, QPixmap, QPushButton, Qt, QVBoxLayout
+from aqt.operations import CollectionOp, QueryOp
+from aqt.qt import (QAction, QCheckBox, QDialog, QDialogButtonBox, QLabel, QMenu, QPixmap, QPushButton,
+                    QScrollArea, Qt, QVBoxLayout)
 from aqt.utils import showInfo, showWarning, tooltip
 
+from .apply import Plan, apply_plan, plan_grades
 from .builder import build_pack
 
 ADDON_DIR = Path(__file__).resolve().parent
@@ -144,9 +147,107 @@ def show_status() -> None:
     )
 
 
+# ---------- Apply car grades ----------
+
+INBOX = HOME / "inbox"
+
+
+def apply_car_grades() -> None:
+    result = run_helper("fetch-grades")
+    if result is None:
+        return
+    if result.returncode != 0:
+        showWarning(f"Couldn't download your car grades:\n{result.stderr[-800:]}")
+        return
+    names = json.loads(result.stdout.strip() or "[]")
+    files = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(INBOX.glob("*.json"))]
+    if not files:
+        tooltip("No car grades waiting.")
+        return
+    QueryOp(parent=mw, op=lambda col: plan_grades(col, files), success=lambda plan: confirm_apply(plan, names)) \
+        .with_progress("Checking car grades…").run_in_background()
+
+
+def confirm_apply(plan: Plan, names: list[str]) -> None:
+    goods = sum(1 for c in plan.cards for g in c.grades if g["rating"] == 3)
+    agains = plan.grade_count - goods
+    if not plan.cards and not plan.skip_tags:
+        reasons = "\n".join(f"• {k}: {v}" for k, v in plan.skipped.items()) or "• already applied"
+        showInfo(f"Nothing to apply.\n\n{reasons}")
+        run_helper("delete-grades", *names)
+        return
+
+    dialog = QDialog(mw)
+    dialog.setWindowTitle("Car Review: apply car grades")
+    layout = QVBoxLayout(dialog)
+    lines = [f"<b>{plan.grade_count} grades for {len(plan.cards)} cards</b> ({goods} Good, {agains} Again)."]
+    if plan.skip_tags:
+        lines.append(f"{len(plan.skip_tags)} card(s) you skipped as not audio-friendly will be tagged "
+                     "<i>car-review::skip</i> and left out of future car lists.")
+    if plan.skipped:
+        lines.append("Not applied: " + ", ".join(f"{v} {k}" for k, v in plan.skipped.items()) + ".")
+    lines.append("Anki makes a backup first, and <b>Edit ▸ Undo</b> reverts all of it in one step.")
+    text = QLabel("<br><br>".join(lines))
+    text.setWordWrap(True)
+    layout.addWidget(text)
+
+    preview = QLabel("<br>".join(f"{c.preview}" for c in plan.cards[:40])
+                     + (f"<br>… and {len(plan.cards) - 40} more" if len(plan.cards) > 40 else ""))
+    scroll = QScrollArea()
+    scroll.setWidget(preview)
+    scroll.setMaximumHeight(220)
+    layout.addWidget(QLabel("First answer for each card (what Anki will do):"))
+    layout.addWidget(scroll)
+
+    late = None
+    if plan.late_days:
+        late = QCheckBox("Some grades are from an earlier day. Apply them anyway "
+                         "(their next interval is counted from today, so it lands about a day later).")
+        late.setChecked(False)
+        layout.addWidget(late)
+
+    buttons = QDialogButtonBox()
+    apply_button = buttons.addButton("Apply", QDialogButtonBox.ButtonRole.AcceptRole)
+    buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    apply_button.setDefault(True)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+        return
+
+    allow_late = bool(late and late.isChecked())
+    report_box: dict = {}
+
+    def op(col):
+        mw.create_backup_now()  # waits until the backup is written
+        report = apply_plan(col, plan, allow_late=allow_late)
+        report_box["report"] = report
+        return report.changes or OpChanges()  # nothing changed when late grades were held back
+
+    def done(_changes) -> None:
+        r = report_box["report"]
+        summary = [f"Applied {sum(r.applied.values())} grades to {r.cards} cards "
+                   f"({r.applied.get('Good', 0)} Good, {r.applied.get('Again', 0)} Again)."]
+        if r.tagged:
+            summary.append(f"Tagged {r.tagged} card(s) as not audio-friendly.")
+        if r.skipped:
+            summary.append("Not applied: " + ", ".join(f"{v} {k}" for k, v in r.skipped.items()) + ".")
+        if r.mismatches or r.failures:
+            summary.append("\nProblems (please report these):\n" + "\n".join(r.mismatches + r.failures))
+            showWarning("\n".join(summary))
+        else:
+            showInfo("\n".join(summary) + "\n\nSync when you're ready so your phone and AnkiWeb see them.")
+        if not r.failures and not (plan.late_days and not allow_late):
+            run_helper("delete-grades", *names)
+
+    CollectionOp(parent=mw, op=op).success(done).run_in_background()
+
+
 def setup_menu() -> None:
     menu = QMenu("Car Review", mw)
-    for label, fn in (("Send to Car", send_to_car), ("Pair phone…", pair_phone), ("Status", show_status)):
+    for label, fn in (("Send to Car", send_to_car), ("Apply car grades…", apply_car_grades),
+                      ("Pair phone…", pair_phone), ("Status", show_status)):
         action = QAction(label, mw)
         action.triggered.connect(fn)
         menu.addAction(action)
