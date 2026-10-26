@@ -46,7 +46,8 @@ def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now:
     cards: list[dict] = []
     skipped: dict[str, int] = {}
     seen_cards: set[int] = set()
-    seen_notes: set[int] = set()
+    note_days: dict[int, set[int]] = {}  # note id -> days that already have one of its cards
+    last_day = today + days_ahead
     try:
         for block, name in enumerate(deck_names):
             did = col.decks.id_for_name(name)
@@ -54,19 +55,27 @@ def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now:
                 skipped[f"deck not found: {name}"] = 1
                 continue
             block_start = len(cards)
-            for card, kind, again, good in _block_cards(col, did, today, days_ahead):
+            for card, kind, again, good, due_day in _block_cards(col, did, today, days_ahead):
                 if card.id in seen_cards:
                     continue
                 seen_cards.add(card.id)
-                entry = _card_entry(col, card, kind, again, good, block, name, today, skipped)
+                entry = _card_entry(col, card, kind, again, good, block, name, due_day, skipped)
                 if entry is None:
                     continue
-                # One card per note per day, as Anki's sibling burying does.
-                day_key = (card.nid, entry["due_day"])
-                if kind == "review" and day_key in seen_notes:
-                    skipped["sibling already in list"] = skipped.get("sibling already in list", 0) + 1
+                # One card per note per day, as Anki's sibling burying does. Today's cards come from
+                # Anki's queue, which already buries siblings; a later review that clashes with a
+                # sibling moves to the next free day, as it would in Anki, or waits for a later list.
+                days = note_days.setdefault(card.nid, set())
+                if kind == "review" and entry["due_day"] > today:
+                    while entry["due_day"] in days:
+                        entry["due_day"] += 1
+                    if entry["due_day"] > last_day:
+                        skipped["sibling already that day"] = skipped.get("sibling already that day", 0) + 1
+                        continue
+                elif kind == "review" and entry["due_day"] in days:
+                    skipped["sibling already that day"] = skipped.get("sibling already that day", 0) + 1
                     continue
-                seen_notes.add(day_key)
+                days.add(entry["due_day"])
                 cards.append(entry)
             cards[block_start:] = _order_block(cards[block_start:], col.decks.config_dict_for_deck_id(did))
     finally:
@@ -86,37 +95,53 @@ def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now:
 
 
 def _block_cards(col: Collection, did: int, today: int, days_ahead: int):
-    """Yield (card, kind, again_secs, good_secs) for one deck block, in play order."""
+    """Yield (card, kind, again_secs, good_secs, due_day) for one deck block, in play order.
+
+    due_day is the first Anki day the card can be played. New cards and learning cards that are
+    due now stay playable on later days too, as in Anki (unfinished new cards come back tomorrow).
+    """
     col.decks.select(did)
     queued = col.sched.get_queued_cards(fetch_limit=5000, intraday_learning_only=False)
     for qc in queued.cards:
         card = col.get_card(qc.card.id)
-        yield card, _kind(card), _secs(qc.states.again), _secs(qc.states.good)
+        due_day = card.due if card.queue == QUEUE_TYPE_REV else today
+        yield card, _kind(card), _secs(qc.states.again), _secs(qc.states.good), due_day
 
     # Learning cards whose timer hasn't run out yet aren't in the queue; add them with their due time.
+    # Interday learning cards (steps of a day or more) due on a later day in the window come too.
     deck_ids = [d for d in col.decks.deck_and_child_ids(did)]
     ids = ",".join(str(d) for d in deck_ids)
-    waiting = col.db.list(
-        f"select id from cards where did in ({ids}) and "
+    waiting = col.db.all(
+        f"select id, queue, due from cards where did in ({ids}) and "
         f"((queue = {QUEUE_TYPE_LRN} and due < ?) or (queue = {QUEUE_TYPE_DAY_LEARN_RELEARN} and due <= ?)) order by due",
-        col.sched.day_cutoff, today,
+        col.sched.day_cutoff, today + days_ahead,
     )
-    for cid in waiting:
+    for cid, queue, due in waiting:
         card = col.get_card(cid)
         states = col._backend.get_scheduling_states(cid)
-        yield card, _kind(card), _secs(states.again), _secs(states.good)
+        due_day = max(due, today) if queue == QUEUE_TYPE_DAY_LEARN_RELEARN else today
+        yield card, _kind(card), _secs(states.again), _secs(states.good), due_day
 
-    # Tomorrow's (and later) reviews, ordered like the deck preset's review sort order.
-    if days_ahead > 0:
-        later = col.db.list(
-            f"select id from cards where did in ({ids}) and queue = {QUEUE_TYPE_REV} and due > ? and due <= ?",
-            today, today + days_ahead,
-        )
-        conf = col.decks.config_dict_for_deck_id(did)
-        for cid in _sort_reviews(col, later, conf, today + 1):
-            card = col.get_card(cid)
-            states = col._backend.get_scheduling_states(cid)
-            yield card, "review", _secs(states.again), _secs(states.good)
+    if days_ahead <= 0:
+        return
+    # Later reviews, ordered like the deck preset's review sort order. Cards buried today (because
+    # a sibling was studied, or by hand) come back tomorrow, as Anki unburies them at the new day.
+    rows = col.db.all(
+        f"select id, queue, type, due from cards where did in ({ids}) and "
+        f"((queue = {QUEUE_TYPE_REV} and due > ? and due <= ?) or (queue in (-2, -3) and type = 2 and due <= ?))",
+        today, today + days_ahead, today + days_ahead,
+    )
+    due_days = {cid: (max(due, today + 1) if queue < 0 else due) for cid, queue, _type, due in rows}
+    conf = col.decks.config_dict_for_deck_id(did)
+    for cid in _sort_reviews(col, list(due_days), conf, today + 1):
+        card = col.get_card(cid)
+        states = col._backend.get_scheduling_states(cid)
+        yield card, "review", _secs(states.again), _secs(states.good), due_days[cid]
+    # New cards buried today come back tomorrow too.
+    for cid in col.db.list(f"select id from cards where did in ({ids}) and queue in (-2, -3) and type = 0 order by due"):
+        card = col.get_card(cid)
+        states = col._backend.get_scheduling_states(cid)
+        yield card, "new", _secs(states.again), _secs(states.good), today + 1
 
 
 def _order_block(entries: list[dict], conf: dict) -> list[dict]:
@@ -180,7 +205,7 @@ def _sort_reviews(col: Collection, cids: list[int], conf: dict, on_day: int) -> 
     return [c.id for c in cards]
 
 
-def _card_entry(col, card, kind, again, good, block, deck_name, today, skipped) -> dict | None:
+def _card_entry(col, card, kind, again, good, block, deck_name, due_day, skipped) -> dict | None:
     note = card.note()
     if note.has_tag("car-review::skip"):  # double-Back in the car: "doesn't work as audio"
         skipped["marked not audio-friendly"] = skipped.get("marked not audio-friendly", 0) + 1
@@ -205,7 +230,7 @@ def _card_entry(col, card, kind, again, good, block, deck_name, today, skipped) 
         "block": block,
         "deck": deck_name,
         "kind": kind,
-        "due_day": card.due if card.queue == QUEUE_TYPE_REV else today,
+        "due_day": due_day,
         "due_at": card.due if card.queue == QUEUE_TYPE_LRN else None,  # epoch secs for intraday learning
         "again_secs": again,
         "good_secs": good,

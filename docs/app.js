@@ -115,7 +115,9 @@
   const saveState = () => DB.set('kv', 'state', state);
 
   function cardReady(c) { return audioReady.has(c.q_audio) && audioReady.has(c.a_audio); }
-  function isDueToday(c) { return c.kind === 'learn' || c.due_day <= ankiDay(); }
+  // Every card carries the first Anki day it can be played (learning cards due today, interday
+  // learning on their day, buried cards from tomorrow, reviews on their due day).
+  function isDueToday(c) { return c.due_day <= ankiDay(); }
   function todaysCards() { return list ? list.cards.filter((c) => isDueToday(c) && !state.done[c.cid]) : []; }
 
   // ---------- Choosing the next card, the way Anki does ----------
