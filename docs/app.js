@@ -455,15 +455,19 @@
     $('speed-val').textContent = Number($('speed').value).toFixed(1);
     $('show-text').checked = localStorage.getItem('showText') === '1';
 
-    // Pairing link from the add-on's QR code: #pair=<secret>. Save it, then wipe it from the address bar.
+    // Pairing link from the add-on's QR code: #pair=<secret> (never sent to any server).
+    // A Home Screen app on iPhone gets its own storage, separate from Safari's, so in Safari the
+    // code stays in the address: "Add to Home Screen" then saves it, and the Home Screen app
+    // pairs itself when it first opens.
+    const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
     const m = location.hash.match(/pair=([A-Za-z0-9_-]{40,})/);
     if (m) {
       const old = await DB.get('kv', 'pairing');
       if (old && old !== m[1]) { await DB.clear('audio'); await DB.del('kv', 'list'); await DB.del('kv', 'state'); }
       await DB.set('kv', 'pairing', m[1]);
-      history.replaceState(null, '', location.pathname);
-      log('paired with this laptop');
+      if (!old || old !== m[1]) log('paired with this laptop');
     }
+    $('add-home').classList.toggle('hidden', standalone || !m);
     const code = await DB.get('kv', 'pairing');
     if (!code) { show('unpaired'); return; }
     // Ask the browser to keep our cards and audio even when storage gets tight.

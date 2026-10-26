@@ -57,12 +57,17 @@
     <div class="panel">
       <p><b>Not set up yet.</b></p>
       <p>On your computer, open Anki ▸ Tools ▸ Car Review ▸ <b>Pair phone</b>, then scan the QR code with this phone's camera.</p>
+      <p>Opened from the Home Screen and seeing this? Delete this icon, scan the QR code again, and use Share ▸ Add to Home Screen from the page that opens.</p>
     </div>
   </section>
 
   <!-- Home -->
   <section id="home" class="hidden">
     <h1>Car Review</h1>
+    <div id="add-home" class="panel hidden" style="border-color: var(--accent)">
+      <p><b style="color: var(--text)">Paired ✓ Next: add Car Review to your Home Screen.</b></p>
+      <p>Tap Share (□↑) ▸ <b>Add to Home Screen</b> ▸ Add, then open Car Review from your Home Screen. It pairs itself and downloads your cards there. You can close this Safari tab afterwards.</p>
+    </div>
     <div class="panel">
       <div class="stat"><span>Cards for today</span><b id="h-due">–</b></div>
       <div class="stat"><span>Ready offline</span><b id="h-ready">–</b></div>
@@ -81,7 +86,6 @@
     </div>
     <details class="panel">
       <summary>More</summary>
-      <p>Tip: Share ▸ Add to Home Screen to open Car Review like an app.</p>
       <button id="clear-today">Reset today's progress on this phone</button>
       <button id="unpair">Unpair this phone</button>
       <div id="log"></div>
@@ -102,6 +106,6 @@
     <button id="d-stop">Stop</button>
   </section>
 </main>
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
