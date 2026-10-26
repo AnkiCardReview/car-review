@@ -24,6 +24,7 @@ from pathlib import Path
 import requests
 
 from .pairing import Pairing
+from .ui import Progress, run_with_window
 
 HOME = Path.home() / "CarReview"
 CACHE = HOME / "audio-cache"
@@ -95,14 +96,18 @@ def on_charger() -> bool:
     return s.ACLineStatus != 0  # 0 = on battery, 1 = plugged in, 255 = unknown
 
 
-def wait_for_charger(**status) -> None:
+def wait_for_charger(progress: Progress | None = None, **status) -> None:
     """Pause while on battery; carry on when plugged back in."""
     if on_charger():
         return
     keep_awake(False)  # let the laptop sleep normally while unplugged
     write_status(state="paused (on battery)", **status)
-    while not on_charger():
-        time.sleep(30)
+    if progress:
+        progress.note = "Paused: the laptop is on battery. Plug it in to continue."
+    while not on_charger() and not (progress and progress.stopped):
+        time.sleep(5)
+    if progress:
+        progress.note = ""
     keep_awake(True)
 
 
@@ -175,7 +180,7 @@ def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int) ->
     return json.dumps(out, separators=(",", ":")).encode()
 
 
-def send(pack_path: Path) -> None:
+def send(pack_path: Path, progress: Progress) -> None:
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
     pairing = load_pairing()
     relay = Relay(pairing)
@@ -185,15 +190,18 @@ def send(pack_path: Path) -> None:
     keep_awake(True)
     cards = pack["cards"]
     started = time.time()
+    progress.unit = "cards ready"
     try:
         on_relay = relay.names("audio/")
         ready: list[dict] = []
         made = 0
         for i, card in enumerate(cards):
+            if not progress.checkpoint():
+                break  # stopped by the user: the phone keeps the cards already sent
             for fp, text in ((card["q_audio"], card["question"]), (card["a_audio"], card["answer"])):
                 path = CACHE / f"{fp}.mp3"
                 if not path.exists():
-                    wait_for_charger(ready=len(ready), total=len(cards), made=made)
+                    wait_for_charger(progress, ready=len(ready), total=len(cards), made=made)
                     path.write_bytes(voice.mp3(text))
                     made += 1
                 name = pairing.audio_name(fp)
@@ -201,22 +209,27 @@ def send(pack_path: Path) -> None:
                     relay.put(name, path.read_bytes())
                     on_relay.add(name)
             ready.append(card)
+            progress.step(len(ready), len(cards))
             if len(ready) % BATCH == 0 or i == len(cards) - 1:
                 relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - len(ready)))
                 write_status(state="sending", ready=len(ready), total=len(cards), made=made,
                              elapsed=int(time.time() - started), made_at=pack["made_at"])
-        if not cards:
-            relay.put("list", phone_list(pack, [], pairing, pending=0))
-        write_status(state="done", ready=len(cards), total=len(cards), made=made,
+        if progress.stopped or not cards:
+            relay.put("list", phone_list(pack, ready, pairing, pending=0))
+        state = "stopped" if progress.stopped else "done"
+        write_status(state=state, ready=len(ready), total=len(cards), made=made,
                      elapsed=int(time.time() - started), made_at=pack["made_at"])
+        progress.finish(f"{len(ready):,} cards ready on your phone ({made:,} new clips made)."
+                        + (" Stopped early." if progress.stopped else " Done ✓"))
     except Exception as err:
         write_status(state="error", error=str(err), detail=traceback.format_exc()[-2000:])
+        progress.finish(f"Stopped by an error: {err}")
         raise
     finally:
         keep_awake(False)
 
 
-def prepare(pack_path: Path) -> None:
+def prepare(pack_path: Path, progress: Progress) -> None:
     """Make audio ahead of time (nearest due date first) without uploading anything."""
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
     cards = sorted(pack["cards"], key=lambda c: c["due_day"])
@@ -231,16 +244,25 @@ def prepare(pack_path: Path) -> None:
     keep_awake(True)
     started = time.time()
     total = len(todo)
+    progress.unit = "clips"
+    made = 0
     try:
-        for i, (fp, text) in enumerate(todo.items()):
-            wait_for_charger(made=i, total=total)
+        for fp, text in todo.items():
+            if not progress.checkpoint():
+                break
+            wait_for_charger(progress, made=made, total=total)
             (CACHE / f"{fp}.mp3").write_bytes(voice.mp3(text))
-            if i % 20 == 0:
-                write_status(state="preparing audio ahead", made=i, total=total, cards=len(cards),
+            made += 1
+            progress.step(made, total)
+            if made % 20 == 0:
+                write_status(state="preparing audio ahead", made=made, total=total, cards=len(cards),
                              elapsed=int(time.time() - started))
-        write_status(state="prepared", made=total, total=total, cards=len(cards), elapsed=int(time.time() - started))
+        state = "stopped" if progress.stopped else "prepared"
+        write_status(state=state, made=made, total=total, cards=len(cards), elapsed=int(time.time() - started))
+        progress.finish(f"{made:,} of {total:,} clips made." + (" Stopped early; it carries on next time." if progress.stopped else " Done ✓"))
     except Exception as err:
         write_status(state="error", error=str(err), detail=traceback.format_exc()[-2000:])
+        progress.finish(f"Stopped by an error: {err}")
         raise
     finally:
         keep_awake(False)
@@ -251,8 +273,10 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("send", help="make missing audio, encrypt and upload a car list")
     s.add_argument("--pack", type=Path, required=True)
+    s.add_argument("--no-window", action="store_true", help="don't show the progress window")
     pr = sub.add_parser("prepare", help="make audio ahead of time for a list (no upload)")
     pr.add_argument("--pack", type=Path, required=True)
+    pr.add_argument("--no-window", action="store_true", help="don't show the progress window")
     sub.add_parser("status", help="print the last progress report")
     sub.add_parser("link", help="print the phone pairing link")
     q = sub.add_parser("qr", help="save the pairing QR code as a PNG")
@@ -262,10 +286,14 @@ def main() -> None:
     d = sub.add_parser("delete-grades", help="delete grade files from the relay once they're applied")
     d.add_argument("names", nargs="+")
     args = ap.parse_args()
-    if args.cmd == "send":
-        send(args.pack)
-    elif args.cmd == "prepare":
-        prepare(args.pack)
+    if args.cmd in ("send", "prepare"):
+        title = "Car Review: sending to your car" if args.cmd == "send" else "Car Review: making audio ahead"
+        progress = Progress(title)
+        work = (lambda p: send(args.pack, p)) if args.cmd == "send" else (lambda p: prepare(args.pack, p))
+        if args.no_window:
+            work(progress)
+        else:
+            run_with_window(progress, work)
     elif args.cmd == "status":
         print(STATUS.read_text() if STATUS.exists() else "{}")
     elif args.cmd == "link":
