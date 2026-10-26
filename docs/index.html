@@ -75,6 +75,11 @@
       <label for="rate">Speed: <span id="rate-val">1.0</span>×</label>
       <input id="rate" type="range" min="0.8" max="1.6" step="0.1" value="1.0">
     </div>
+    <label for="keepalive">Background sound between presses</label>
+    <select id="keepalive">
+      <option value="silent">Silent</option>
+      <option value="tone">Quiet hum (you'll hear it)</option>
+    </select>
     <label class="toggle"><input id="seek" type="checkbox"> Also listen for holding a button (test 5)</label>
     <div class="row">
       <button id="sample">Read sample card</button>
@@ -126,11 +131,12 @@
   // near-silence so iOS keeps sending the Forward/Back buttons to this page.
   const player = new Audio();
   player.preload = 'auto';
-  const silenceUrl = makeSilence();
+  const silenceUrl = makeLoop(false);
+  const toneUrl = makeLoop(true);
   let started = false;
   let lastPress = Date.now();
 
-  function makeSilence() {
+  function makeLoop(tone) {
     const rate = 22050, secs = 2, n = rate * secs;
     const buf = new ArrayBuffer(44 + n * 2);
     const v = new DataView(buf);
@@ -139,23 +145,44 @@
     str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
     v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
     str(36, 'data'); v.setUint32(40, n * 2, true);
-    // Inaudible noise rather than pure zeros, in case iOS treats digital silence as "not playing".
-    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round((Math.random() - 0.5) * 6), true);
+    // Silent mode: inaudible noise rather than pure zeros, in case iOS treats digital
+    // silence as "not playing". Tone mode: a soft 220 Hz hum (2 s = whole cycles, so it loops cleanly).
+    for (let i = 0; i < n; i++) {
+      const s = tone ? Math.sin(2 * Math.PI * 220 * i / rate) * 1500 : (Math.random() - 0.5) * 6;
+      v.setInt16(44 + i * 2, Math.round(s), true);
+    }
     return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+
+  // Switching sources cancels the previous play() with an AbortError; that one is expected.
+  function playFailed(e) {
+    if (e.name !== 'AbortError') note('audio-error', `${e.name}: ${e.message}`);
   }
 
   function playSilence() {
     player.loop = true;
-    player.src = silenceUrl;
-    player.play().catch((e) => note('audio-error', e.message));
+    player.src = $('keepalive').value === 'tone' ? toneUrl : silenceUrl;
+    player.play().catch(playFailed);
   }
 
   function playClip(name) {
     player.loop = false;
     player.src = `clips/${name}.wav`;
-    player.play().catch((e) => note('audio-error', e.message));
+    player.play().catch(playFailed);
   }
   player.addEventListener('ended', () => { if (!player.loop) playSilence(); });
+
+  // Diagnostics: when the audio stops or the screen changes, and when the page was frozen.
+  for (const type of ['pause', 'stalled', 'error']) {
+    player.addEventListener(type, () => { if (started) note(`audio-${type}`, player.loop ? 'background loop' : 'clip'); });
+  }
+  document.addEventListener('visibilitychange', () => { if (started) note(`screen-${document.visibilityState}`); });
+  let lastTick = Date.now();
+  setInterval(() => {
+    const gap = Date.now() - lastTick;
+    if (started && gap > 3000) note('page-was-frozen', `${Math.round(gap / 1000)}s`);
+    lastTick = Date.now();
+  }, 1000);
 
   function speak(lines) {
     speechSynthesis.cancel();
@@ -181,8 +208,9 @@
   function note(name, detail = '') {
     const now = new Date();
     const quiet = Math.round((now - lastPress) / 1000);
+    const audio = player.paused ? 'paused' : 'playing';
     entries.push(`${now.toLocaleTimeString()}  ${labels[name] || name}  ` +
-      `screen=${document.visibilityState}  quiet=${quiet}s  mode=${$('mode').value}${detail ? '  ' + detail : ''}`);
+      `screen=${document.visibilityState}  audio=${audio}  quiet=${quiet}s  mode=${$('mode').value}${detail ? '  ' + detail : ''}`);
     $('log').textContent = entries.slice().reverse().join('\n');
   }
 
@@ -252,6 +280,7 @@
     $('voice-opts').classList.toggle('hidden', $('mode').value !== 'voice');
     note('mode-changed');
   });
+  $('keepalive').addEventListener('change', () => { note('background-sound', $('keepalive').value); if (started) playSilence(); });
   $('rate').addEventListener('input', () => { $('rate-val').textContent = Number($('rate').value).toFixed(1); });
   $('seek').addEventListener('change', () => { if (started) registerHandlers(); note('hold-listening', String($('seek').checked)); });
 
