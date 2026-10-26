@@ -41,8 +41,11 @@ def read_cards(profile: str, deck_names: list[str], days_ahead: int):
                 if any(name == d or name.startswith(d + "\x1f") for d in deck_names):
                     wanted.append(did)
             marks = ",".join("?" * len(wanted))
+            names: dict[int, list[str]] = {}
+            for ntid, name in db.execute("select ntid, name from fields order by ntid, ord"):
+                names.setdefault(ntid, []).append(name)
             rows = db.execute(
-                f"select c.id, c.ord, c.queue, n.flds, d.name from cards c "
+                f"select c.id, c.ord, c.queue, n.flds, d.name, n.mid from cards c "
                 f"join notes n on n.id = c.nid join decks d on d.id = c.did "
                 f"where c.did in ({marks}) and "
                 f"((c.queue = 2 and c.due <= ?) or c.queue = 0)",
@@ -50,7 +53,9 @@ def read_cards(profile: str, deck_names: list[str], days_ahead: int):
             ).fetchall()
         finally:
             db.close()
-    return rows
+    # (card id, cloze ordinal, queue, {field name: value}, deck name)
+    return [(cid, ord_, queue, dict(zip(names.get(mid, []), flds.split("\x1f"))), deck)
+            for cid, ord_, queue, flds, deck, mid in rows]
 
 
 def original_html(front: str, cloze_number: int) -> str:
@@ -79,16 +84,16 @@ def main() -> None:
     skips = collections.Counter()
     changes = collections.Counter()
     acronyms = collections.Counter()
-    for cid, ord_, queue, flds, deck in rows:
-        front = flds.split("\x1f")[0]
+    for cid, ord_, queue, fields, deck in rows:
+        front = next(iter(fields.values()), "")
         if "{{c" not in front:
             skips["not a cloze card"] += 1
             continue
-        spoken = to_speech(front, ord_ + 1)
+        spoken = to_speech(front, ord_ + 1, fields)
         if spoken.skip:
             skips[spoken.skip.split(" (")[0]] += 1
         changes.update(spoken.changes)
-        said = spoken.question_text() + " " + " ".join(spoken.answers)
+        said = spoken.question_text() + " " + spoken.answer_text()
         acronyms.update(re.findall(r"\b[A-Z]{2,6}s?\b", said))
         results.append((cid, ord_ + 1, queue, deck.replace("\x1f", "::"), front, spoken))
 
@@ -115,7 +120,7 @@ def render(results, sample, kept, skips, changes, acronyms) -> str:
                 q.append(f'<span class="blank">{e(hint_phrase(seg.hint)) if seg.hint else "blank"}</span>')
             else:
                 q.append(e(seg.text))
-        answers = "<br>".join(f"{i + 1}. {e(a)}" for i, a in enumerate(spoken.answers))
+        answers = "Answer: " + e(spoken.answer_text())
         status = f'<span class="skip">Skipped: {e(spoken.skip)}</span>' if spoken.skip else ""
         tags = " ".join(f'<span class="tag">{e(c)}</span>' for c in sorted(spoken.changes))
         kind = "new" if queue == 0 else "review"

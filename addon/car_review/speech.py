@@ -2,10 +2,16 @@
 
 Pure Python with no Anki imports, so it can be tested and previewed outside Anki.
 
-    spoken = to_speech(text_field_html, cloze_number)
+    spoken = to_speech(text_field_html, cloze_number, fields)
     spoken.question  -> list of Segment: plain text to say, or a blank (with an optional hint)
     spoken.answers   -> one string per blank, in order
+    spoken.answer_text() -> all of this card's answers as one sentence, revealed together
     spoken.skip      -> reason the card doesn't work as audio, or None
+
+Cloze numbers work like Anki: c1 and c2 are separate cards, and on each card only its own
+number is hidden (the others are read as normal text). Several blanks with the same number
+are hidden together and revealed together, as Anki does. Cards set to AnKing's "one by one"
+reveal are skipped.
 """
 
 from __future__ import annotations
@@ -39,6 +45,17 @@ class Spoken:
             out.append(f"[{hint_phrase(seg.hint) if seg.hint else 'blank'}]" if seg.blank else seg.text)
         return " ".join(s for s in out if s).strip()
 
+    def answer_text(self) -> str:
+        """All answers as one sentence: 'Gallstones and alcohol', 'A, B, and C'."""
+        items = [a.rstrip(" .") for a in self.answers if a.strip()]
+        if len(items) <= 1:
+            text = items[0] if items else ""
+        elif len(items) == 2:
+            text = f"{items[0]}, and {items[1]}"
+        else:
+            text = ", ".join(items[:-1]) + f", and {items[-1]}"
+        return text + "." if text else ""
+
 
 def hint_phrase(hint: str) -> str:
     """How a cloze hint is said in place of the blank: 'drug' -> 'which drug?', '2' -> 'name two'."""
@@ -62,7 +79,10 @@ VISUAL_WORDS = re.compile(
 )
 
 
-def skip_reason(front_html: str, answers_html: list[str]) -> str | None:
+def skip_reason(front_html: str, answers_html: list[str], fields: dict[str, str] | None = None) -> str | None:
+    # AnKing note types reveal these blanks one at a time; too fiddly to do by ear.
+    if fields and _strip_tags(fields.get("One by one", "")).strip():
+        return "one-by-one card"
     if re.search(r"<img\b", front_html, re.I):
         return "image on front"
     if re.search(r"<table\b", front_html, re.I):
@@ -83,7 +103,7 @@ BLANK_MARK = "\u0001{}\u0001"  # survives the text clean-up untouched
 BLANK_SPLIT = re.compile("\u0001(\\d+)\u0001")
 
 
-def to_speech(front_html: str, cloze_number: int) -> Spoken:
+def to_speech(front_html: str, cloze_number: int, fields: dict[str, str] | None = None) -> Spoken:
     spoken = Spoken()
     answers_html: list[str] = []
     hints: list[str | None] = []
@@ -99,7 +119,7 @@ def to_speech(front_html: str, cloze_number: int) -> Spoken:
     if not answers_html:
         spoken.skip = "no blank for this card"
         return spoken
-    spoken.skip = skip_reason(front_html, answers_html)
+    spoken.skip = skip_reason(front_html, answers_html, fields)
 
     text = speakable(with_marks, spoken.changes)
     for i, piece in enumerate(BLANK_SPLIT.split(text)):

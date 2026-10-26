@@ -90,8 +90,8 @@
   <h2>Practice (works like the real app)</h2>
   <p>Four made-up cards. It reads the question and waits. Say your answer out loud, then:</p>
   <ul>
-    <li><b>⏭ Forward:</b> hear the answer (on the two-blank card, one blank per press). After the last answer, ⏭ = <b>Good</b> (a quick bright sound) and the next card starts.</li>
-    <li><b>⏮ Back:</b> before the answer, repeats the question. After the last answer, ⏮ = <b>Again</b> (a softer low sound).</li>
+    <li><b>⏭ Forward:</b> hear the answer (on the two-blank card, both answers together, as in Anki). After the answer, ⏭ = <b>Good</b> (a quick bright sound) and the next card starts.</li>
+    <li><b>⏮ Back:</b> before the answer, repeats the question. After the answer, ⏮ = <b>Again</b> (a softer low sound).</li>
     <li>Pressing either button cuts off whatever is playing. Works with the phone locked.</li>
   </ul>
   <div class="panel">
@@ -201,35 +201,33 @@
     if (queue.length) playUrl(queue.shift()); else playSilence();
   });
 
-  // Practice: question -> wait -> Forward reveals each blank -> Forward = Good / Back = Again.
-  let blanksPerCard = [1, 1, 1, 2];
-  fetch('samples/cards.json').then((r) => r.json()).then((v) => { blanksPerCard = v; }).catch(() => {});
-  const practice = { on: false, card: 0, revealed: 0 };
+  // Practice: question -> wait -> Forward reveals the answer (all of a card's blanks together,
+  // as in Anki) -> Forward = Good / Back = Again.
+  let cardCount = 4;
+  fetch('samples/cards.json').then((r) => r.json()).then((v) => { cardCount = v; }).catch(() => {});
+  const practice = { on: false, card: 0, revealed: false };
   const sample = (name) => `samples/${$('sample-voice').value}-${name}.mp3`;
   function practiceStatus(text) {
     $('practice-status').textContent = text;
     setTitle(text);
   }
   function askCard(i) {
-    practice.card = i % blanksPerCard.length;
-    practice.revealed = 0;
+    practice.card = i % cardCount;
+    practice.revealed = false;
     afterClip = null;
     queue.length = 0;
     playUrl(sample(`${practice.card + 1}-q`));
-    practiceStatus(`Card ${practice.card + 1} of ${blanksPerCard.length} · say your answer, then ⏭`);
+    practiceStatus(`Card ${practice.card + 1} of ${cardCount} · say your answer, then ⏭`);
   }
   function practiceForward() {
-    const total = blanksPerCard[practice.card];
-    if (practice.revealed >= total) { grade('good'); return; }
-    practice.revealed++;
+    if (practice.revealed) { grade('good'); return; }
+    practice.revealed = true;
     afterClip = null;
-    playUrl(sample(`${practice.card + 1}-a${practice.revealed}`));
-    practiceStatus(practice.revealed < total
-      ? `Blank ${practice.revealed} of ${total} · ⏭ next blank`
-      : `Answer · ⏭ Good   ⏮ Again`);
+    playUrl(sample(`${practice.card + 1}-a`));
+    practiceStatus('Answer · ⏭ Good   ⏮ Again');
   }
   function practiceBack() {
-    if (practice.revealed >= blanksPerCard[practice.card]) grade('again');
+    if (practice.revealed) grade('again');
     else askCard(practice.card);
   }
   function grade(result) {
@@ -362,7 +360,7 @@
     afterClip = null;
     playUrl(sample('1-q'));
     queue.length = 0;
-    queue.push(sample('1-a1'));
+    queue.push(sample('1-a'));
   }
   $('practice').addEventListener('click', () => {
     $('mode').value = 'clips';

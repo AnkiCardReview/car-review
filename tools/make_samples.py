@@ -4,7 +4,7 @@ Run with the Car Review Python environment:
     python tools/make_samples.py
 
 Writes, for each voice, docs/samples/<voice>-<card>-q.mp3 (the question),
-<voice>-<card>-a<k>.mp3 (the answer to blank k), and prints the generation speed.
+<voice>-<card>-a.mp3 (all of the card's answers together), and prints the generation speed.
 The Good/Again sounds come from tools/make_sounds.py.
 """
 
@@ -20,7 +20,7 @@ import numpy as np
 from kokoro import KPipeline
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addon"))
-from car_review.speech import hint_phrase  # noqa: E402
+from car_review.speech import Spoken, hint_phrase  # noqa: E402
 
 RATE = 24000
 OUT = Path(__file__).resolve().parent.parent / "docs" / "samples"
@@ -79,17 +79,18 @@ def main() -> None:
         started = time.perf_counter()
         audio_secs = 0.0
         for n, (question, hints, answers) in enumerate(CARDS, start=1):
-            clips = {"q": speak(pipeline, voice, question_text(question, hints))}
-            for k, answer in enumerate(answers, start=1):
-                clips[f"a{k}"] = speak(pipeline, voice, answer)
+            # Blanks with the same cloze number are revealed together, as in Anki.
+            clips = {
+                "q": speak(pipeline, voice, question_text(question, hints)),
+                "a": speak(pipeline, voice, Spoken(answers=answers).answer_text()),
+            }
             for name, audio in clips.items():
                 audio_secs += len(audio) / RATE
                 to_mp3(audio, OUT / f"{voice}-{n}-{name}.mp3")
         took = time.perf_counter() - started
         total_time += took
         print(f"{voice}: {audio_secs:.1f}s of audio in {took:.1f}s ({audio_secs / took:.1f}x real time)")
-    # The test page reads how many blanks each sample card has from here.
-    (OUT / "cards.json").write_text(json.dumps([len(a) for _, _, a in CARDS]))
+    (OUT / "cards.json").write_text(json.dumps(len(CARDS)))  # how many sample cards the page cycles through
     per_card = total_time / (len(VOICES) * len(CARDS))
     print(f"average {per_card:.2f}s to make one card; 200 cards would take about {200 * per_card / 60:.1f} min")
 
