@@ -19,9 +19,14 @@
 | When | You do | What happens by itself |
 |---|---|---|
 | Leaving | Close Anki | Anki syncs, then Car Review sends the cards due today (and the next few days) to the mailbox |
+| Early morning | Nothing | Half an hour after Anki's day starts (4:30 am by default), Car Review sends that day's exact list, without Anki open. You can turn this off in Settings (see below) |
 | Before driving | Open Car Review on the phone | It downloads the new cards and audio |
 | Driving | Tap Start, then use the steering-wheel buttons | Each answer is saved on the phone right away and uploaded when there's signal |
 | Arriving | Open Anki | It syncs, downloads your car answers, checks them, and (after you click Apply) records them through Anki's own scheduler |
+
+**What runs on your computer when Anki is closed.** Car Review never runs in secret; each of these shows in Settings and can be turned off:
+- **Making audio and sending**: after you close Anki, with a small progress window you can pause or stop.
+- **The morning list** (Settings ▸ "Have each day's list on my phone by morning"): a task called "Car Review morning list" in Windows Task Scheduler runs at 4:30 am and sends the new day's list. Many laptops can't wake up for scheduled tasks, so when you close Anki while plugged in, Car Review also keeps the laptop from sleeping until 4:35 am (the screen still turns off). Unplugging cancels it. Turning the setting off removes the task.
 
 **The one rule:** after a drive, open Anki on the computer before reviewing on AnkiMobile or AnkiDroid. If you forget, nothing breaks: any card you've already reviewed elsewhere is skipped when the car answers are applied, so nothing is ever counted twice.
 

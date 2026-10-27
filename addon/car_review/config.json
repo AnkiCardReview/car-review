@@ -3,6 +3,7 @@
     "days_ahead": 3,
     "auto_apply": false,
     "auto_voice": true,
+    "morning_job": true,
     "python": "",
     "setup_done": false
 }

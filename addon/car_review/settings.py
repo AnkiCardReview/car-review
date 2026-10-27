@@ -13,6 +13,7 @@ effect straight away.
 from __future__ import annotations
 
 import io
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ DEFAULTS = {
     "days_ahead": 3,      # send today's cards plus this many days ahead
     "auto_apply": False,  # apply car grades on opening without asking (summary shown afterwards)
     "auto_voice": True,   # make missing audio automatically when Anki closes while plugged in
+    "morning_job": True,  # send the new day's list early in the morning, with Anki closed
     "python": "",         # Car Review's Python, if not in the default place
     "setup_done": False,  # the setup wizard has been shown once
 }
@@ -328,6 +330,21 @@ class SettingsDialog(QDialog):
                               "small progress window, and pauses on battery. Without this, use "
                               "Tools ▸ Car Review ▸ Prepare audio.</small>"))
         layout.addSpacing(10)
+        rollover = int(mw.col.get_config("rollover", 4)) if mw.col else 4
+        at = f"{rollover % 12 or 12}:30 {'am' if rollover < 12 else 'pm'}"
+        self.morning_job = QCheckBox("Have each day's list on my phone by morning, even if Anki stays closed")
+        self.morning_job.setChecked(bool(self.config.get("morning_job", True)))
+        layout.addWidget(self.morning_job)
+        layout.addWidget(text(
+            f"<small>Recommended. At {at}, half an hour after Anki's day starts, Car Review sends "
+            "that day's exact list without opening Anki"
+            + (": this adds a task called “Car Review morning list” to Windows Task Scheduler. "
+               if sys.platform == "win32" else ". ") +
+            "Many laptops can't wake up by themselves for that, so when you close Anki while plugged in, "
+            "Car Review also stops the laptop from going to sleep until then (the screen still turns off). "
+            "Unplugging cancels it. Off: your phone gets a new list only when you close Anki, and on the "
+            "next day it can play only that list's reviews, not new cards.</small>"))
+        layout.addSpacing(10)
         self.auto_apply = QCheckBox("Apply my car answers as soon as Anki opens, without asking first")
         self.auto_apply.setChecked(bool(self.config.get("auto_apply")))
         layout.addWidget(self.auto_apply)
@@ -483,6 +500,9 @@ class SettingsDialog(QDialog):
             "<li><b>When you close Anki</b>, your due cards are sent to your phone. "
             + ("New cards get their audio while your computer is plugged in.</li>" if self.auto_voice.isChecked()
                else "New cards need audio first: Tools ▸ Car Review ▸ Prepare audio.</li>") +
+            ("<li><b>Early each morning</b>, the new day's list is sent even if Anki stays closed. If you "
+             "closed Anki while plugged in, the laptop stays awake until then.</li>"
+             if self.morning_job.isChecked() else "") +
             "<li><b>The first time</b>, making audio takes a while (roughly 5–15 seconds per card on a "
             "laptop, much faster on newer Macs), so start it now, ideally plugged in. You can keep using "
             "the computer; a small window shows progress.</li>"
@@ -509,14 +529,20 @@ class SettingsDialog(QDialog):
             "days_ahead": self.days.value(),
             "auto_voice": self.auto_voice.isChecked(),
             "auto_apply": self.auto_apply.isChecked(),
+            "morning_job": self.morning_job.isChecked(),
             "setup_done": True,
         })
         return cfg
 
     def save(self, close: bool = True) -> None:
         cfg = self.collect()
+        changed_morning = cfg["morning_job"] != self.config.get("morning_job", True)
         mw.addonManager.writeConfig(__name__, cfg)
         self.config = cfg
+        if changed_morning and cfg["decks"]:
+            from . import anki_addon
+
+            anki_addon.remember_for_morning()  # adds or removes the morning task now
         if close:
             self.timer.stop()
             self.accept()

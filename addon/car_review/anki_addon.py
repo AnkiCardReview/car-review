@@ -399,6 +399,13 @@ def show_status() -> None:
     if s.get("unvoiced"):
         lines.append(f"Cards still without audio: {s['unvoiced']} (Tools ▸ Car Review ▸ Prepare audio)")
     lines.append(f"New audio made: {s.get('made', 0)} clips in {mins} min")
+    if setting("morning_job"):
+        from .morning import task_time
+
+        lines.append(f"Morning list: on. It's sent at {task_time()} even with Anki closed, and closing Anki "
+                     "while plugged in keeps the laptop awake until then (Settings to turn off).")
+    else:
+        lines.append("Morning list: off. The phone gets a new list when you close Anki.")
     showInfo("\n".join(lines))
 
 

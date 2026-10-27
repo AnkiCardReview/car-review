@@ -30,6 +30,7 @@ Free and open source. No account, no app store, no subscription. Works with Anki
 ## What it can and can't do
 - **Cloze cards only** for now. Basic cards, cards with an image on the front, cards that point at a picture and AnKing "one by one" cards are skipped, and stay due in Anki as normal.
 - **English voice** (Kokoro "Heart"). The audio is made on your own computer while it's plugged in. The first time, a typical laptop takes about 10 seconds per card; after that, each card is ready for good, so only new cards need audio.
+- **Runs a little in the background**, all shown in Settings: audio is made after Anki closes (with a progress window), and by default the new day's list is sent at 4:30 am, which keeps a plugged-in laptop awake until then. [Details](help/how-it-works.md#a-normal-day).
 - **Anki desktop** is needed. It is tested with Anki 26.09; versions from 24.11 on should work. AnkiMobile and AnkiDroid keep working as usual alongside it.
 
 ## License

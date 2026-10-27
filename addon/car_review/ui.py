@@ -116,8 +116,7 @@ def run_with_window(progress: Progress, work) -> None:
         if messagebox.askyesno("Stop making audio?",
                                "Stop now? Everything already made is kept, and next time it carries on from here.",
                                parent=root):
-            progress.stop()
-            counts.config(text="Stopping after the current clip…")
+            progress.stop()  # the next refresh shows "Stopping…", then closes the window
 
     def refresh() -> None:
         heading.config(text=progress.title)
@@ -126,12 +125,20 @@ def run_with_window(progress: Progress, work) -> None:
             bar["value"] = 100
             counts.config(text=progress.result, wraplength=400, justify="left")
             eta.config(text=f"Took {fmt_duration(time.time() - progress.started)}.")
-            note.config(text="This window closes by itself in a few seconds." if progress.auto_close
+            note.config(text="This window closes by itself in a few seconds." if progress.auto_close or progress.stopped
                         else "You can close this window.")
             pause.pack_forget()
-            stop.config(text="Close")
-            if progress.auto_close:
-                root.after(6000, root.destroy)
+            stop.config(text="Close", state="normal")
+            if progress.auto_close or progress.stopped:
+                root.after(3000 if progress.stopped else 6000, root.destroy)
+            return
+        if progress.stopped:
+            # Stopping waits for the clip being made (or the voice still loading) to finish.
+            counts.config(text="Stopping after the current clip… everything made so far is kept.")
+            eta.config(text="This window closes by itself.")
+            pause.config(state="disabled")
+            stop.config(state="disabled")
+            root.after(500, refresh)
             return
         if progress.total:
             bar["value"] = 100 * progress.done / progress.total

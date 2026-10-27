@@ -283,43 +283,59 @@ def send(pack_path: Path, progress: Progress) -> None:
             # Once asked to make audio (Prepare audio), a newer quick list (closing Anki) keeps it going.
             voicing = voicing or pack.get("voice_missing", True)
             progress.title = "Car Review: making audio and sending" if voicing else "Car Review: sending to your car"
-            progress.unit = "cards"
+
+            def clips(card: dict) -> tuple:
+                return (card["q_audio"], card["question"]), (card["a_audio"], card["answer"])
+
+            def cached(card: dict) -> bool:
+                return all((CACHE / f"{fp}.mp3").exists() for fp, _ in clips(card))
+
+            # Cards the phone can already play go in every list sent from here on, so a partial
+            # list or a Stop never leaves the phone with fewer cards than it had.
+            ready_idx = {i for i, c in enumerate(cards)
+                         if cached(c) and all(pairing.audio_name(fp) in on_relay for fp, _ in clips(c))}
+            to_voice = {i for i, c in enumerate(cards) if not cached(c)} if voicing else set()
+            to_upload = {i for i, c in enumerate(cards) if i not in ready_idx and cached(c)}
             # Voice the nearest due days first; the phone list keeps Anki's play order.
-            order = sorted(range(len(cards)), key=lambda i: (cards[i]["due_day"], i))
-            ready_idx: set[int] = set()
-            unvoiced = 0
+            order = sorted(to_voice | to_upload, key=lambda i: (cards[i]["due_day"], i))
+            # Count what takes the time: the cards needing audio, or else the cards to upload.
+            progress.unit = "cards needing audio" if to_voice else "cards to upload"
+            work_total, work_done = len(to_voice) or len(order), 0
+            progress.step(0, work_total)
             newer = False
-            for n, i in enumerate(order):
+            for i in order:
                 if not progress.checkpoint():
-                    break  # stopped by the user: the phone keeps the cards already sent
+                    break  # stopped by the user: the phone keeps every card that's ready
                 if pack_path.stat().st_mtime != loaded_at:
                     newer = True
                     break
-                card = cards[i]
-                clips = ((card["q_audio"], card["question"]), (card["a_audio"], card["answer"]))
-                if not voicing and not all((CACHE / f"{fp}.mp3").exists() for fp, _ in clips):
-                    unvoiced += 1
+                for fp, text in clips(cards[i]):
+                    path = CACHE / f"{fp}.mp3"
+                    if not path.exists():
+                        wait_for_charger(progress, ready=len(ready_idx), total=len(cards), made=made)
+                        if progress.stopped:
+                            break
+                        path.write_bytes(voice.mp3(text))
+                        made += 1
+                    name = pairing.audio_name(fp)
+                    if name not in on_relay:
+                        relay.put(name, path.read_bytes())
+                        on_relay.add(name)
                 else:
-                    for fp, text in clips:
-                        path = CACHE / f"{fp}.mp3"
-                        if not path.exists():
-                            wait_for_charger(progress, ready=len(ready_idx), total=len(cards), made=made)
-                            path.write_bytes(voice.mp3(text))
-                            made += 1
-                        name = pairing.audio_name(fp)
-                        if name not in on_relay:
-                            relay.put(name, path.read_bytes())
-                            on_relay.add(name)
                     ready_idx.add(i)
-                progress.step(n + 1, len(cards))
-                if len(ready_idx) and len(ready_idx) % BATCH == 0 and n + 1 < len(cards):
+                if i not in to_voice and to_voice:
+                    continue
+                work_done += 1
+                progress.step(work_done, work_total)
+                if work_done % BATCH == 0 and work_done < work_total:
                     ready = [cards[j] for j in sorted(ready_idx)]
-                    relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - n - 1, unvoiced=unvoiced))
+                    relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - len(ready)))
                     write_status(state="sending", ready=len(ready), total=len(cards), made=made,
                                  elapsed=int(time.time() - started), made_at=pack["made_at"])
             if newer:
                 continue  # start over with the newer list; finished clips are reused
             ready = [cards[j] for j in sorted(ready_idx)]
+            unvoiced = len(cards) - len(ready)
             relay.put("list", phone_list(pack, ready, pairing, pending=0, unvoiced=unvoiced))
             LAST_SENT.write_text(json.dumps({"anki_today": pack["anki_today"], "made_at": pack["made_at"],
                                              "sent": int(time.time())}))
