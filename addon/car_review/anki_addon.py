@@ -105,10 +105,11 @@ def remember_for_morning() -> None:
         )
         wanted = (mw.addonManager.getConfig(__name__) or {}).get("morning_job", True)
         marker = HOME / "morning-task.json"
-        if wanted and not marker.exists():
+        current = marker.exists() and json.loads(marker.read_text()).get("version") == morning.TASK_VERSION
+        if wanted and not current:
             result = run_helper("schedule")
             if result.returncode == 0:
-                marker.write_text(json.dumps({"scheduled": result.stdout.strip()}))
+                marker.write_text(json.dumps({"scheduled": result.stdout.strip(), "version": morning.TASK_VERSION}))
         elif not wanted and marker.exists():
             run_helper("unschedule")
             marker.unlink()

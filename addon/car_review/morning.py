@@ -28,6 +28,7 @@ from .common import HOME
 
 SETTINGS = HOME / "morning.json"
 TASK_NAME = "Car Review morning list"
+TASK_VERSION = 2  # bump when the task's settings change, so existing installs re-register it
 
 
 def save_settings(**fields) -> None:
@@ -68,14 +69,15 @@ def task_time() -> str:
 
 
 def schedule(python: Path, workdir: Path) -> str:
-    """Create or update the daily task. Windows only for now."""
+    """Create or update the daily task. Windows only for now. It may make audio for the new day
+    (auto_voice), which can take an hour on a slow laptop, so Windows may run it for up to 4 hours."""
     if sys.platform != "win32":
         raise RuntimeError("The morning job is only set up automatically on Windows so far.")
     pythonw = python.with_name("pythonw.exe") if python.with_name("pythonw.exe").exists() else python
     script = f"""
 $a = New-ScheduledTaskAction -Execute '{pythonw}' -Argument '-m car_review.helper morning' -WorkingDirectory '{workdir}'
 $t = New-ScheduledTaskTrigger -Daily -At '{task_time()}'
-$s = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+$s = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 Register-ScheduledTask -TaskName '{TASK_NAME}' -Description 'Sends today''s Car Review list to your phone (made by the Car Review Anki add-on).' -Action $a -Trigger $t -Settings $s -Force | Out-Null
 """
     run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],

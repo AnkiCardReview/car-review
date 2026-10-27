@@ -302,6 +302,12 @@ def send(pack_path: Path, progress: Progress) -> None:
             progress.unit = "cards needing audio" if to_voice else "cards to upload"
             work_total, work_done = len(to_voice) or len(order), 0
             progress.step(0, work_total)
+            if to_voice and ready_idx:
+                # Voicing takes a while: the phone gets this list's ready cards straight away.
+                ready = [cards[j] for j in sorted(ready_idx)]
+                relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - len(ready)))
+                write_status(state="sending", ready=len(ready), total=len(cards), made=made,
+                             elapsed=int(time.time() - started), made_at=pack["made_at"])
             newer = False
             for i in order:
                 if not progress.checkpoint():
