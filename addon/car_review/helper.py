@@ -424,6 +424,22 @@ def prepare(pack_path: Path, progress: Progress) -> None:
         keep_awake(False)
 
 
+def keep_timing(name: str, data: bytes) -> None:
+    """Keep the phone's clip timings (times only, no card text) for tools/timing_report.py.
+    The inbox is cleared on every fetch, so they're copied out; the last 14 days are kept."""
+    try:
+        timing = json.loads(data).get("timing")
+    except ValueError:
+        return
+    if not timing:
+        return
+    folder = HOME / "timing"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / (name.replace("/", "_") + ".json")).write_text(json.dumps(timing), encoding="utf-8")
+    for old in sorted(folder.glob("*.json"), key=lambda f: f.stat().st_mtime)[:-14]:
+        old.unlink()
+
+
 def main() -> None:
     # Started with pythonw.exe (no console window), Python has nowhere to print; keep a log instead.
     if sys.stderr is None or sys.stdout is None:
@@ -490,6 +506,7 @@ def main() -> None:
             data = relay.get(name)
             if data is not None:
                 (INBOX / (name.replace("/", "_") + ".json")).write_bytes(data)
+                keep_timing(name, data)
         print(json.dumps(names))
     elif args.cmd == "delete-grades":
         relay = Relay(load_pairing(create=False))

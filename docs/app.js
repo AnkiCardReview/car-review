@@ -4,7 +4,7 @@
 // uploading them (encrypted) for the Anki add-on. Grades are not applied to Anki by this app.
 (() => {
   const RELAY = 'https://car-review-relay.ankicardreview.workers.dev/v1';
-  const APP_VERSION = 9; // also in index.html (app.js?v=); sent with grades so problems can be traced
+  const APP_VERSION = 10; // also in index.html (app.js?v=); sent with grades so problems can be traced
   const $ = (id) => document.getElementById(id);
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -293,7 +293,7 @@
     uploading = true;
     try {
       const sent = state.grades.length;
-      const body = enc.encode(JSON.stringify({ phone: state.phone, day: state.day, app: APP_VERSION, grades: all }));
+      const body = enc.encode(JSON.stringify({ phone: state.phone, day: state.day, app: APP_VERSION, grades: all, timing: state.timing || [] }));
       await relayPut(`grades/${state.day}-${state.phone}`, body);
       state.uploaded = sent;
       state.carried = [];
@@ -424,7 +424,61 @@
   const TAIL = 0.4;        // ...and ends with about 0.45 s: skip both
   const speed = () => Number($('speed').value);
   const playFailed = (e) => { if (e.name !== 'AbortError') log(`audio: ${e.name} ${e.message}`); };
+
+  // ---------- Timing: how long each gap really is on this phone ----------
+  // For each clip: how long after your press (or the clip before it) it started playing, how long
+  // it played, and how long you took to press after it ended. Only times, no card text. They go
+  // up with the grades, so the laptop can show where a drive's time goes (tools/timing_report.py).
+  let pressT = null;   // when a button was last pressed (performance.now)
+  let pressVia = null; // 'f' (⏭) or 'b' (⏮)
+  let prevEnd = null;  // when the last clip ended
+  let rec = null;      // the clip playing now
+  let lastRec = null;  // the last finished clip, waiting for your next press
+  let driveStartedAt = 0;
+  const perf = () => Math.round(performance.now());
+  function markPress(via) {
+    const t = perf();
+    if (rec && rec.endAt == null) finishRec(t, true);
+    if (lastRec && !lastRec.entry.cut && lastRec.entry.wait === undefined) lastRec.entry.wait = t - lastRec.endAt;
+    lastRec = null;
+    pressT = t;
+    pressVia = via;
+  }
+  function startRec(kind) {
+    if (rec && rec.endAt == null) finishRec(perf(), true);
+    if (!driving) return;
+    rec = { k: kind, from: pressT ?? prevEnd ?? perf(), via: pressT != null ? pressVia : null, at: now() };
+    pressT = null;
+  }
+  function finishRec(t, cut = false) {
+    const r = rec;
+    rec = null;
+    if (!r) return;
+    r.endAt = t;
+    prevEnd = t;
+    const entry = { k: r.k, at: r.at, lag: r.playAt != null ? r.playAt - r.from : -1, len: r.playAt != null ? t - r.playAt : 0 };
+    if (r.via) entry.via = r.via;
+    if (cut) entry.cut = 1;
+    r.entry = entry;
+    lastRec = r;
+    if (state) {
+      state.timing = state.timing || [];
+      state.timing.push(entry);
+      state.timing.splice(0, Math.max(0, state.timing.length - 800));
+    }
+  }
+  function timingSummary() {
+    const xs = (state?.timing || []).filter((e) => e.at >= driveStartedAt);
+    const med = (a) => (a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : 0);
+    const secs = (ms) => (ms / 1000).toFixed(1);
+    const lags = xs.filter((e) => e.via && e.lag >= 0 && !(e.via === 'b' && e.k === 'q')).map((e) => e.lag);
+    const len = (k) => xs.filter((e) => e.k === k && !e.cut).map((e) => e.len);
+    const waits = xs.filter((e) => e.wait >= 0).map((e) => e.wait);
+    return `timing (${xs.length} clips): sound ${med(lags)} ms after a press (slowest ${lags.length ? Math.max(...lags) : 0} ms); `
+      + `questions ${secs(med(len('q')))} s, answers ${secs(med(len('a')))} s; you pressed ${secs(med(waits))} s after a clip ended`;
+  }
   function playSilence() {
+    if (rec) finishRec(perf(), true);
     clipToken += 1; // a clip still loading must not start after this
     clipActive = false;
     trimEnd = null;
@@ -467,6 +521,7 @@
     }
     if (token !== clipToken) return; // a button press moved on while the clip was loading
     if (!blob) { log(`audio: clip missing on the phone (${name.slice(0, 8)})`); clipActive = true; clipDone(); return; }
+    startRec(current && name === current.q_audio ? 'q' : current && name === current.a_audio ? 'a' : 'cue');
     if (clipUrl) URL.revokeObjectURL(clipUrl);
     clipUrl = URL.createObjectURL(blob);
     playSource(clipUrl, speed());
@@ -475,6 +530,7 @@
     if (!clipActive) return;
     clipActive = false;
     trimEnd = null;
+    finishRec(perf());
     const next = afterClip;
     afterClip = null;
     if (next) next(); else playSilence();
@@ -486,6 +542,7 @@
   });
   player.addEventListener('timeupdate', () => { if (clipActive && trimEnd && player.currentTime >= trimEnd) clipDone(); });
   player.addEventListener('ended', () => { if (!player.loop) clipDone(); });
+  player.addEventListener('playing', () => { if (rec && clipActive && rec.playAt == null) rec.playAt = perf(); });
   // A clip that fails to load must not leave the app waiting.
   player.addEventListener('error', () => { if (clipActive) { log('audio: a clip failed to load, skipping it'); clipDone(); } });
   // iOS can pause the audio (a call, Siri, a navigation prompt). While driving, start it again,
@@ -543,6 +600,7 @@
       setScreen(`Next card in ${mins} min`, counts());
       $('card-text').textContent = '';
       playSilence();
+      prevEnd = null; // the next question starts from its timer, not from a press
       waitTimer = setTimeout(goNext, Math.min(60000, Math.max(1000, pick.waitUntil - now())));
     } else {
       current = null;
@@ -556,6 +614,7 @@
   }
 
   function forward() {
+    markPress('f');
     if (stage === 'question') {
       stage = 'answer';
       setScreen('Answer · ⏭ Good  ⏮ Again', counts());
@@ -571,6 +630,7 @@
   // ⏮ on a question: once = repeat it, twice quickly = undo the last answer, three times = skip
   // the card as not audio-friendly. Presses are counted for 0.6 s after the last one.
   function back() {
+    markPress('b');
     if (stage === 'answer') { grade(1); return; }
     if (stage !== 'question' && stage !== 'waiting' && stage !== 'done') return;
     backPresses += 1;
@@ -607,11 +667,14 @@
   function grade(rating) {
     answer(current, rating);
     playedThisDrive += 1;
+    if (playedThisDrive % 25 === 0) log(timingSummary());
     goNext(); // straight on to the next question: no sound in between
   }
 
   async function startDrive() {
     driving = true;
+    driveStartedAt = now();
+    pressT = null; prevEnd = null; lastRec = null;
     playedThisDrive = 0;
     lastBlock = null;
     history.length = 0;
@@ -635,6 +698,7 @@
     goNext();
   }
   function stopDrive() {
+    if (driving && playedThisDrive) log(timingSummary());
     driving = false;
     stage = 'idle';
     clearTimeout(waitTimer);
@@ -715,7 +779,7 @@
   // Lets a desktop browser simulate the buttons and the clock while testing.
   window.carReviewTest = {
     forward, back, undo, next: () => goNext(), advance: (ms) => { clockOffset += ms; },
-    get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
+    timingSummary, get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
   };
 
   init().catch((err) => { log(`startup error: ${err.message}`); show('home'); });
