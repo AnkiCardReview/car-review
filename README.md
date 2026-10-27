@@ -16,7 +16,9 @@ Free and open source. No account, no app store, no subscription. Works with Anki
 4. **Scan the QR code** with your phone's camera. Then add Car Review to your Home Screen (iPhone: Share ▸ *Add to Home Screen*; Android: ⋮ ▸ *Add to Home screen*) and open it from there.
 5. **Drive.** Close Anki before you leave, and your cards go to your phone. Open Car Review, tap **Start** and put the phone away. When you arrive, open Anki: it shows your car answers and applies them.
 
-**In the car:** ⏭ next track = hear the answer, then ⏭ again = **Good**. ⏮ previous track = **Again** (before the answer, it repeats the question instead). Press ⏮ twice quickly to undo your last answer, three times to skip a card that doesn't work as audio.
+**In the car:** ⏭ next track = hear the answer, then ⏭ again = **Good**. ⏮ previous track = **Again** (before the answer, it repeats the question instead). Press ⏮ twice quickly to undo your last answer, three times to skip a card that doesn't work as audio. If you'd rather not press for the answer, the phone's settings can play it by itself after a number of seconds you choose.
+
+**After a drive:** the phone's home screen shows a summary of the drive, and in Anki, **Tools ▸ Car Review ▸ Car stats** shows your past drives and compares how you do in the car with how you do in Anki, per deck, for mature and young cards.
 
 > **Safety first.** Set everything up and tap Start *before* you drive. While driving, use only the steering-wheel buttons, and never look at or touch the phone. See the [terms of use](TERMS.md).
 

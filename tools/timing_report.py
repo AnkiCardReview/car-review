@@ -57,11 +57,15 @@ def report(entries: list[dict]) -> str:
     out.append(line("question", [e["len"] for e in q if not e.get("cut")], "s"))
     out.append(line("answer", [e["len"] for e in a if not e.get("cut")], "s"))
     out.append("\nYour time after a clip ended, before pressing:")
-    out.append(line("after the question (thinking)", [e["wait"] for e in q if e.get("wait", -1) >= 0], "s"))
+    out.append(line("after the question (thinking)", [e["wait"] for e in q if e.get("wait", -1) >= 0
+                                                       and not e.get("auto")], "s"))
     out.append(line("after the answer (grading)", [e["wait"] for e in a if e.get("wait", -1) >= 0], "s"))
     cut_q = sum(1 for e in q if e.get("cut"))
     cut_a = sum(1 for e in a if e.get("cut"))
     out.append(f"  pressed before the clip finished: {cut_q} questions, {cut_a} answers")
+    auto = sum(1 for e in a if e.get("via") == "t")
+    if auto:
+        out.append(f"  answers played by themselves: {auto} of {len(a)}")
 
     listen = sum(e["len"] for e in entries)
     gaps = sum(e["lag"] for e in entries if ok(e) and e["lag"] < 5000)

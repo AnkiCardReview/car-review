@@ -36,6 +36,8 @@
   .stat { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
   .stat:last-child { border-bottom: none; }
   .stat b { font-weight: 600; }
+  input.secs { width: 4.2em; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 2px 6px; }
+  .hint { font-size: 15px; margin: 2px 0 8px; }
   .ok { color: var(--good); } .warn { color: #f5c451; } .bad { color: var(--again); }
   progress { width: 100%; height: 12px; }
   label { display: block; margin: 8px 0 4px; color: var(--muted); }
@@ -127,10 +129,18 @@
     </div>
     <button id="start" class="primary" disabled>Start</button>
     <button id="refresh">Check for a new list</button>
+    <div id="last-drive" class="panel hidden">
+      <b>Last drive</b>
+      <div id="ld-body"></div>
+      <p class="hint">More in Anki: Tools ▸ Car Review ▸ Car stats (car vs Anki, mature cards, past drives).</p>
+    </div>
     <div class="panel">
       <label for="speed">Voice speed: <span id="speed-val">1.2</span>×</label>
       <input id="speed" type="range" min="0.8" max="2.0" step="0.1" value="1.2">
       <label><input id="show-text" type="checkbox"> Show card text on screen (for when parked)</label>
+      <label><input id="auto-answer" type="checkbox"> Play the answer by itself after
+        <input id="answer-secs" class="secs" type="number" min="1" max="60" step="1" value="8" inputmode="numeric"> seconds</label>
+      <p class="hint">Counts from the end of the question. Press ⏭ or ⏮ sooner and they work as usual. You still grade every card yourself.</p>
     </div>
     <details class="panel">
       <summary>More</summary>
@@ -156,6 +166,6 @@
     <button id="d-stop">Stop</button>
   </section>
 </main>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

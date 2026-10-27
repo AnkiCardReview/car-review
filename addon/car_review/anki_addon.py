@@ -13,7 +13,7 @@ Automatic:
   the helper also keeps the laptop awake until Anki's next day starts and sends that day's list.
 
 Tools ▸ Car Review menu: Settings, Send to Car, Prepare audio, Apply car grades, Pair phone,
-Status, Help.
+Status, Car stats, Help.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from anki.collection import OpChanges
 from aqt import gui_hooks, mw
 from aqt.operations import CollectionOp, QueryOp
 from aqt.qt import QAction, QCheckBox, QDialog, QDialogButtonBox, QLabel, QMenu, QScrollArea, QTimer, QVBoxLayout
-from aqt.utils import askUser, openLink, showInfo, showWarning, tooltip
+from aqt.utils import askUser, openLink, showInfo, showText, showWarning, tooltip
 
 from . import voice_setup
 from .apply import Plan, apply_plan, plan_grades
@@ -499,6 +499,21 @@ def show_status() -> None:
     showInfo("\n".join(lines))
 
 
+# ---------- Car stats ----------
+
+def show_stats() -> None:
+    """Your drives, car vs Anki retention per deck, and where the time went (stats.py)."""
+    if not mw.col:
+        return
+    from .stats import report_html
+
+    def done(text: str) -> None:
+        showText(text, type="html", title="Car Review: car stats", minWidth=720, minHeight=560)
+
+    QueryOp(parent=mw, op=lambda col: report_html(col, list(setting("decks") or [])),
+            success=done).failure(lambda err: showWarning(f"Couldn't make the car stats: {err}")).run_in_background()
+
+
 # ---------- Setup ----------
 
 def open_settings_menu() -> None:
@@ -515,6 +530,7 @@ def setup() -> None:
                       ("Apply car grades…", apply_car_grades),
                       ("Pair phone…", pair_phone),
                       ("Status", show_status),
+                      ("Car stats", show_stats),
                       (None, None),
                       ("Help", lambda: openLink(HELP_URL))):
         if label is None:

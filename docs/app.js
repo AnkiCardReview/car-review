@@ -4,7 +4,7 @@
 // uploading them (encrypted) for the Anki add-on. Grades are not applied to Anki by this app.
 (() => {
   const RELAY = 'https://car-review-relay.ankicardreview.workers.dev/v1';
-  const APP_VERSION = 10; // also in index.html (app.js?v=); sent with grades so problems can be traced
+  const APP_VERSION = 11; // also in index.html (app.js?v=); sent with grades so problems can be traced
   const $ = (id) => document.getElementById(id);
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -262,6 +262,7 @@
       state.done[card.cid] = true;
     }
     state.grades.push({ cid: card.cid, rating, at: t, ms: Math.min(60000, t - shownAt), day: state.day, list: list.made_at });
+    if (driving && lastDrive) { lastDrive.end = t; saveLastDrive(); }
     saveState();
     uploadSoon();
     log(`${rating === 1 ? 'Again' : rating === 3 ? 'Good' : 'Skip'} ${card.cid}${delay ? ` (back in ${Math.round(delay / 60)} min)` : ''}`);
@@ -393,6 +394,7 @@
     const total = state ? state.grades.length : 0;
     $('h-up').innerHTML = !state || !total ? '–' : state.uploaded >= total ? '<span class="ok">✓ all</span>' : `<span class="warn">${total - state.uploaded} waiting</span>`;
     $('start').disabled = !list || ready === 0;
+    showLastDrive();
     if (list && !listIsToday()) {
       message("Today's list isn't here yet. Your laptop makes it at 4:30 am if it's on and plugged in, "
         + 'or when you open or close Anki. '
@@ -400,6 +402,63 @@
           ? `Meanwhile you can play the ${due.length} reviews due today from last night's list; new and learning cards wait for today's list.`
           : 'Cards sent ahead are already downloaded.'));
     }
+  }
+
+  // ---------- Last drive ----------
+  // A summary of the latest drive on the home screen, worked out from today's answers, so it's
+  // there whether or not Stop was pressed. Answers undone in the car don't count.
+  let lastDrive = (() => { try { return JSON.parse(localStorage.getItem('lastDrive') || 'null'); } catch { return null; } })();
+  function saveLastDrive() {
+    try { localStorage.setItem('lastDrive', JSON.stringify(lastDrive)); } catch { /* only a summary */ }
+  }
+  function driveSummary() {
+    if (!lastDrive || !state || !list || lastDrive.day !== state.day) return null;
+    const grades = state.grades.filter((g) => g.rating > 0 && g.at >= lastDrive.start && g.at <= lastDrive.end);
+    if (!grades.length) return null;
+    const byId = new Map(list.cards.map((c) => [c.cid, c]));
+    const seen = new Set();
+    const decks = new Map(); // deck -> [right, reviews]
+    let learning = 0, again = 0;
+    for (const g of grades) {
+      const c = byId.get(g.cid);
+      if (g.rating === 1) again += 1;
+      const first = !seen.has(g.cid);
+      seen.add(g.cid);
+      if (c && c.kind === 'review' && first) {
+        const deck = c.deck.split('::')[0];
+        const d = decks.get(deck) || [0, 0];
+        d[0] += g.rating > 1 ? 1 : 0;
+        d[1] += 1;
+        decks.set(deck, d);
+      } else learning += 1;
+    }
+    const mins = Math.max(1, Math.round((grades[grades.length - 1].at - lastDrive.start) / 60000));
+    const timing = (state.timing || []).filter((e) => e.at >= lastDrive.start && e.at <= lastDrive.end + 60000);
+    const lags = timing.filter((e) => e.via && e.via !== 't' && e.lag >= 0 && !(e.via === 'b' && e.k === 'q')).map((e) => e.lag).sort((x, y) => x - y);
+    return {
+      when: new Date(lastDrive.start).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }),
+      mins, answers: grades.length, cards: seen.size, again, learning, decks: [...decks],
+      perCard: Math.round((grades[grades.length - 1].at - lastDrive.start) / 1000 / grades.length),
+      auto: timing.filter((e) => e.k === 'a' && e.via === 't').length,
+      lag: lags.length ? lags[Math.floor(lags.length / 2)] : null,
+    };
+  }
+  function showLastDrive() {
+    const s = driveSummary();
+    $('last-drive').classList.toggle('hidden', !s);
+    if (!s) return;
+    const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : '–');
+    const rows = [
+      ['When', `${s.when} · ${s.mins} min`],
+      ['Answers', `${s.answers} on ${s.cards} cards (${s.again} Again)`],
+      ...s.decks.map(([deck, [right, n]]) => [`${deck} reviews right`, `${pct(right, n)} (${right} of ${n})`]),
+      ['Learning-card answers', String(s.learning)],
+      ['Time per answer', `${s.perCard} s`],
+    ];
+    if (s.auto) rows.push(['Answers played by themselves', String(s.auto)]);
+    if (s.lag !== null) rows.push(['Sound after a press', `${s.lag} ms`]);
+    const esc = (t) => t.replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
+    $('ld-body').innerHTML = rows.map(([k, v]) => `<div class="stat"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
   }
 
   // ---------- Audio player ----------
@@ -435,8 +494,11 @@
   let rec = null;      // the clip playing now
   let lastRec = null;  // the last finished clip, waiting for your next press
   let driveStartedAt = 0;
+  let revealTimer = null; // plays the answer by itself (Settings: "Play the answer by itself")
   const perf = () => Math.round(performance.now());
   function markPress(via) {
+    clearTimeout(revealTimer);
+    if (via === 't' && lastRec?.entry) lastRec.entry.auto = 1;
     const t = perf();
     if (rec && rec.endAt == null) finishRec(t, true);
     if (lastRec && !lastRec.entry.cut && lastRec.entry.wait === undefined) lastRec.entry.wait = t - lastRec.endAt;
@@ -576,8 +638,25 @@
   }
   const cue = (which) => (list.announce && audioReady.has(which.audio) ? which.audio : null);
 
+  // After a question ends: silence, and if "Play the answer by itself" is on, the answer after
+  // the chosen number of seconds (any press first cancels it).
+  function playQuestion(card) {
+    playClip(card.q_audio, () => {
+      playSilence();
+      if (!$('auto-answer').checked) return;
+      clearTimeout(revealTimer);
+      revealTimer = setTimeout(() => {
+        if (!driving || current !== card || stage !== 'question') return;
+        markPress('t');
+        reveal('Answer (played by itself) · ⏭ Good  ⏮ Again');
+      }, answerSecs() * 1000);
+    });
+  }
+  const answerSecs = () => Math.min(60, Math.max(1, Math.round(Number($('answer-secs').value) || 8)));
+
   function goNext() {
     clearTimeout(waitTimer);
+    clearTimeout(revealTimer);
     if (!driving) return;
     const pick = nextCard();
     if (pick.card) {
@@ -591,8 +670,8 @@
       const done = lastBlock !== null && current.block > lastBlock && list.announce ? cue(list.announce.blocks[lastBlock]) : null;
       lastBlock = Math.max(lastBlock ?? current.block, current.block);
       const card = current;
-      if (done) playClip(done, () => { if (current === card && stage === 'question') playClip(card.q_audio); });
-      else playClip(current.q_audio);
+      if (done) playClip(done, () => { if (current === card && stage === 'question') playQuestion(card); });
+      else playQuestion(current);
     } else if (pick.waitUntil) {
       current = null;
       stage = 'waiting';
@@ -613,13 +692,17 @@
     }
   }
 
+  function reveal(screen = 'Answer · ⏭ Good  ⏮ Again') {
+    stage = 'answer';
+    setScreen(screen, counts());
+    if ($('show-text').checked) $('card-text').textContent = `${current.question}\n\n→ ${current.answer}`;
+    playClip(current.a_audio);
+  }
+
   function forward() {
     markPress('f');
     if (stage === 'question') {
-      stage = 'answer';
-      setScreen('Answer · ⏭ Good  ⏮ Again', counts());
-      if ($('show-text').checked) $('card-text').textContent = `${current.question}\n\n→ ${current.answer}`;
-      playClip(current.a_audio);
+      reveal();
     } else if (stage === 'answer') {
       grade(3);
     } else if (stage === 'waiting' || stage === 'done') {
@@ -648,11 +731,11 @@
       return;
     }
     shownAt = now();
-    playClip(current.q_audio); // repeat the question
+    playQuestion(current); // repeat the question
   }
   function undo() {
     const card = undoLast();
-    if (!card) { if (stage === 'question') playClip(current.q_audio); return; }
+    if (!card) { if (stage === 'question') playQuestion(current); return; }
     playedThisDrive = Math.max(0, playedThisDrive - 1);
     clearTimeout(waitTimer);
     current = card;
@@ -674,6 +757,8 @@
   async function startDrive() {
     driving = true;
     driveStartedAt = now();
+    lastDrive = { start: driveStartedAt, end: driveStartedAt, day: state.day };
+    saveLastDrive();
     pressT = null; prevEnd = null; lastRec = null;
     playedThisDrive = 0;
     lastBlock = null;
@@ -703,6 +788,7 @@
     stage = 'idle';
     clearTimeout(waitTimer);
     clearInterval(heartbeat);
+    clearTimeout(revealTimer);
     player.pause();
     memory.clear();
     show('home');
@@ -716,6 +802,8 @@
     if (speedSaved) $('speed').value = speedSaved;
     $('speed-val').textContent = Number($('speed').value).toFixed(1);
     $('show-text').checked = localStorage.getItem('showText') === '1';
+    $('auto-answer').checked = localStorage.getItem('autoAnswer') === '1';
+    $('answer-secs').value = localStorage.getItem('answerSecs') || '8';
 
     // Pairing link from the add-on's QR code: #pair=<secret> (never sent to any server).
     // A Home Screen app on iPhone gets its own storage, separate from Safari's, so in Safari the
@@ -757,6 +845,11 @@
     if (!player.loop) player.playbackRate = speed();
   });
   $('show-text').addEventListener('change', () => localStorage.setItem('showText', $('show-text').checked ? '1' : '0'));
+  $('auto-answer').addEventListener('change', () => localStorage.setItem('autoAnswer', $('auto-answer').checked ? '1' : '0'));
+  $('answer-secs').addEventListener('change', () => {
+    $('answer-secs').value = String(answerSecs());
+    localStorage.setItem('answerSecs', $('answer-secs').value);
+  });
   $('clear-today').addEventListener('click', async () => {
     if (!confirm("Reset today's progress on this phone? Grades not yet uploaded will be lost.")) return;
     state = freshState(ankiDay());
@@ -779,7 +872,7 @@
   // Lets a desktop browser simulate the buttons and the clock while testing.
   window.carReviewTest = {
     forward, back, undo, next: () => goNext(), advance: (ms) => { clockOffset += ms; },
-    timingSummary, get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
+    timingSummary, driveSummary, get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
   };
 
   init().catch((err) => { log(`startup error: ${err.message}`); show('home'); });
