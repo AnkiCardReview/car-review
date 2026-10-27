@@ -81,8 +81,9 @@ Press **Finish**.
 | You hear | ⏭ next track | ⏮ previous track |
 |---|---|---|
 | A question (or silence after it) | Hear the answer | Repeat the question |
-| A question, pressed twice quickly | | Skip: "doesn't work as audio" |
-| The answer | **Good** (bright chime) | **Again** (low chime) |
+| A question, pressed twice quickly | | Undo the last answer (you hear its answer again and grade it again) |
+| A question, pressed three times quickly | | Skip: "doesn't work as audio" |
+| The answer | **Good** (the next question starts) | **Again** (the next question starts) |
 
 Nothing plays on its own: after a question, it waits silently as long as you like. Cards you answer **Again** come back after your learning step, just as in Anki.
 

@@ -4,6 +4,7 @@
 // uploading them (encrypted) for the Anki add-on. Grades are not applied to Anki by this app.
 (() => {
   const RELAY = 'https://car-review-relay.ankicardreview.workers.dev/v1';
+  const APP_VERSION = 9; // also in index.html (app.js?v=); sent with grades so problems can be traced
   const $ = (id) => document.getElementById(id);
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -19,14 +20,23 @@
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     }));
-    async function run(store, mode, fn) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(store, mode);
-        const req = fn(tx.objectStore(store));
-        tx.oncomplete = () => resolve(req ? req.result : undefined);
-        tx.onerror = () => reject(tx.error);
-      });
+    // iOS can close the database connection while the app is in the background ("connection
+    // lost"); then open it again and retry once instead of failing for the rest of the drive.
+    async function run(store, mode, fn, retry = true) {
+      try {
+        const db = await open();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, mode);
+          const req = fn(tx.objectStore(store));
+          tx.oncomplete = () => resolve(req ? req.result : undefined);
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('transaction aborted'));
+        });
+      } catch (err) {
+        opening = null;
+        if (retry) return run(store, mode, fn, false);
+        throw err;
+      }
     }
     return {
       get: (store, key) => run(store, 'readonly', (s) => s.get(key)),
@@ -91,10 +101,13 @@
   let list = null;           // the car list from the add-on
   let state = null;          // today's progress on this phone
   let audioReady = new Set();// clip names stored on the phone
-  const logLines = [];
+  // The log survives closing the app, so after a drive it shows what happened (Settings ▸ Log).
+  const logLines = (() => { try { return JSON.parse(localStorage.getItem('log') || '[]'); } catch { return []; } })();
   function log(text) {
-    logLines.push(`${new Date().toLocaleTimeString()}  ${text}`);
-    $('log').textContent = logLines.slice(-80).join('\n');
+    logLines.push(`${new Date().toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit', second: '2-digit' })}  ${text}`);
+    logLines.splice(0, Math.max(0, logLines.length - 300));
+    try { localStorage.setItem('log', JSON.stringify(logLines)); } catch { /* full: the log is only a help */ }
+    $('log').textContent = logLines.slice(-120).join('\n');
   }
 
   function ankiDay() {
@@ -107,14 +120,23 @@
     return { day, done: {}, learning: {}, grades: [], uploaded: 0, phone: state?.phone || crypto.randomUUID().slice(0, 8) };
   }
   async function loadState() {
-    state = (await DB.get('kv', 'state')) || freshState(ankiDay());
+    // Two copies: IndexedDB and localStorage. Use the one that's further along.
+    let saved = null;
+    try { saved = await DB.get('kv', 'state'); } catch (err) { log(`state: ${err.message}`); }
+    let backup = null;
+    try { backup = JSON.parse(localStorage.getItem('state') || 'null'); } catch { backup = null; }
+    const progress = (x) => (x ? x.day * 1e6 + x.grades.length : -1);
+    state = (progress(backup) > progress(saved) ? backup : saved) || freshState(ankiDay());
     if (state.day !== ankiDay()) {
       // A new Anki day: keep grades that still need uploading, start fresh otherwise.
       const pending = state.grades.slice(state.uploaded);
       state = { ...freshState(ankiDay()), carried: pending };
     }
   }
-  const saveState = () => DB.set('kv', 'state', state);
+  function saveState() {
+    try { localStorage.setItem('state', JSON.stringify(state)); } catch { /* IndexedDB still has it */ }
+    return DB.set('kv', 'state', state).catch((err) => log(`state not saved to storage: ${err.message}`));
+  }
 
   function cardReady(c) { return audioReady.has(c.q_audio) && audioReady.has(c.a_audio); }
   // Every card carries the first Anki day it can be played (learning cards due today, interday
@@ -188,7 +210,28 @@
     return {};
   }
 
+  // What each answer changed, so a double-Back can undo it.
+  const history = [];
+  function remember(card) {
+    const own = state.learning[card.cid];
+    history.push({ card, learning: own ? { ...own } : undefined, done: !!state.done[card.cid], grades: state.grades.length });
+    if (history.length > 50) history.shift();
+  }
+  function undoLast() {
+    const h = history.pop();
+    if (!h) return null;
+    if (h.learning) state.learning[h.card.cid] = h.learning; else delete state.learning[h.card.cid];
+    if (h.done) state.done[h.card.cid] = true; else delete state.done[h.card.cid];
+    state.grades.length = h.grades;
+    if (state.uploaded > h.grades) { state.uploaded = h.grades; state.resend = true; } // replace the uploaded file
+    saveState();
+    uploadSoon();
+    log(`undid the answer for ${h.card.cid}`);
+    return h.card;
+  }
+
   function answer(card, rating) {
+    remember(card);
     const t = now();
     const own = state.learning[card.cid];
     let delay = null; // seconds until it comes back, or null when done for today
@@ -225,6 +268,7 @@
   }
 
   function skip(card) {
+    remember(card);
     delete state.learning[card.cid];
     state.done[card.cid] = true;
     state.grades.push({ cid: card.cid, rating: 0, at: now(), ms: 0, day: state.day, list: list.made_at, skip: 'not audio friendly' });
@@ -243,15 +287,17 @@
   async function uploadGrades() {
     if (!keys || !state || uploading) return;
     const all = [...(state.carried || []), ...state.grades];
-    if (!all.length || state.uploaded >= state.grades.length && !(state.carried || []).length) { showHome(); return; }
+    if (!state.resend && (!all.length || state.uploaded >= state.grades.length && !(state.carried || []).length)) { showHome(); return; }
     // No signal: grades stay on the phone, and go up when the 'online' event fires.
     if (navigator.onLine === false) { showHome(); return; }
     uploading = true;
     try {
-      const body = enc.encode(JSON.stringify({ phone: state.phone, day: state.day, grades: all }));
+      const sent = state.grades.length;
+      const body = enc.encode(JSON.stringify({ phone: state.phone, day: state.day, app: APP_VERSION, grades: all }));
       await relayPut(`grades/${state.day}-${state.phone}`, body);
-      state.uploaded = state.grades.length;
+      state.uploaded = sent;
       state.carried = [];
+      state.resend = false;
       saveState();
     } catch (err) {
       log(`upload waiting for signal (${err.message})`);
@@ -265,7 +311,6 @@
   // ---------- Downloading the list and audio ----------
   async function refresh() {
     if (!keys) return;
-    loadSounds();
     message('Checking for a new list…');
     try {
       const raw = await relayGet('list');
@@ -296,8 +341,9 @@
     showHome();
   }
 
+  const cueNames = () => (list.announce ? [...list.announce.blocks, list.announce.end].map((a) => a.audio) : []);
   async function downloadAudio() {
-    const needed = [...new Set(list.cards.flatMap((c) => [c.q_audio, c.a_audio]))].filter((n) => !audioReady.has(n));
+    const needed = [...new Set([...list.cards.flatMap((c) => [c.q_audio, c.a_audio]), ...cueNames()])].filter((n) => !audioReady.has(n));
     if (!needed.length) return;
     const bar = $('h-progress');
     bar.classList.remove('hidden');
@@ -318,7 +364,7 @@
     await Promise.all([worker(), worker(), worker(), worker()]);
     bar.classList.add('hidden');
     // Remove clips no longer in the list, to free space.
-    const keep = new Set(list.cards.flatMap((c) => [c.q_audio, c.a_audio]));
+    const keep = new Set([...list.cards.flatMap((c) => [c.q_audio, c.a_audio]), ...cueNames()]);
     for (const name of await DB.keys('audio')) {
       if (!keep.has(name)) { await DB.del('audio', name); audioReady.delete(name); }
     }
@@ -372,79 +418,94 @@
   })();
   let clipUrl = null;
   let afterClip = null;
+  let clipActive = false;  // a card clip is playing (not the silence between clips)
+  let trimEnd = null;      // where the clip's trailing silence starts
+  const LEAD = 0.3;        // every clip starts with about 0.35 s of silence...
+  const TAIL = 0.4;        // ...and ends with about 0.45 s: skip both
   const speed = () => Number($('speed').value);
   const playFailed = (e) => { if (e.name !== 'AbortError') log(`audio: ${e.name} ${e.message}`); };
   function playSilence() {
+    clipToken += 1; // a clip still loading must not start after this
+    clipActive = false;
+    trimEnd = null;
     player.loop = true;
     player.src = silenceUrl;
     player.play().catch(playFailed);
   }
   function playSource(src, rate) {
+    clipActive = true;
+    trimEnd = null;
     player.loop = false;
     player.src = src;
     player.defaultPlaybackRate = rate;
     player.playbackRate = rate;
     player.preservesPitch = true;
-    player.play().catch(playFailed);
+    player.play().catch((e) => { playFailed(e); if (e.name !== 'AbortError') clipDone(); });
   }
+  // Clips for the drive are copied into memory when it starts: iOS can cut a locked app off from
+  // its stored data after a while, which used to stop the app until it was opened again.
+  const memory = new Map();
+  async function loadForDrive() {
+    const names = [...todaysCards().flatMap((c) => [c.q_audio, c.a_audio]), ...cueNames()];
+    let loaded = 0;
+    for (const name of names) {
+      if (memory.has(name)) continue;
+      try {
+        const blob = await DB.get('audio', name);
+        if (blob) { memory.set(name, new Blob([await blob.arrayBuffer()], { type: 'audio/mpeg' })); loaded += 1; }
+      } catch (err) { log(`audio not loaded: ${err.message}`); }
+    }
+    log(`drive: ${loaded} clips loaded into memory`);
+  }
+  let clipToken = 0;
   async function playClip(name, then = null) {
-    const blob = await DB.get('audio', name);
-    if (!blob) { log(`audio: clip missing on the phone (${name.slice(0, 8)})`); afterClip = then; clipDone(); return; }
+    const token = ++clipToken;
+    afterClip = then;
+    let blob = memory.get(name);
+    if (!blob) {
+      try { blob = await DB.get('audio', name); } catch (err) { log(`audio: ${err.message}`); }
+    }
+    if (token !== clipToken) return; // a button press moved on while the clip was loading
+    if (!blob) { log(`audio: clip missing on the phone (${name.slice(0, 8)})`); clipActive = true; clipDone(); return; }
     if (clipUrl) URL.revokeObjectURL(clipUrl);
     clipUrl = URL.createObjectURL(blob);
-    afterClip = then;
     playSource(clipUrl, speed());
   }
-  // The Good/Again sounds are kept on the phone (they used to load from the internet each time,
-  // so in a tunnel the sound never played and the app waited for it forever).
-  const soundUrls = {};
-  async function loadSounds() {
-    for (const name of ['good', 'again']) {
-      if (soundUrls[name]) continue;
-      let blob = await DB.get('kv', `sound:${name}`);
-      if (!blob) {
-        try {
-          const r = await fetch(`sounds/${name}.mp3`, { signal: timeout() });
-          if (!r.ok) continue;
-          blob = await r.blob();
-          await DB.set('kv', `sound:${name}`, blob);
-        } catch { continue; }
-      }
-      soundUrls[name] = URL.createObjectURL(blob);
-    }
-  }
-  function playSound(name, then) {
-    afterClip = then;
-    playSource(soundUrls[name] || `sounds/${name}.mp3`, 1);
-    // Never wait on a sound: if it can't play, carry on after a moment anyway.
-    clearTimeout(soundGuard);
-    soundGuard = setTimeout(() => { if (afterClip === then) clipDone(); }, 4000);
-  }
-  let soundGuard = null;
   function clipDone() {
-    clearTimeout(soundGuard);
+    if (!clipActive) return;
+    clipActive = false;
+    trimEnd = null;
     const next = afterClip;
     afterClip = null;
     if (next) next(); else playSilence();
   }
+  player.addEventListener('loadedmetadata', () => {
+    if (!clipActive || !isFinite(player.duration) || player.duration < LEAD + TAIL + 0.5) return;
+    player.currentTime = LEAD;
+    trimEnd = player.duration - TAIL;
+  });
+  player.addEventListener('timeupdate', () => { if (clipActive && trimEnd && player.currentTime >= trimEnd) clipDone(); });
   player.addEventListener('ended', () => { if (!player.loop) clipDone(); });
   // A clip that fails to load must not leave the app waiting.
-  player.addEventListener('error', () => { if (!player.loop) { log('audio: a clip failed to load, skipping it'); clipDone(); } });
+  player.addEventListener('error', () => { if (clipActive) { log('audio: a clip failed to load, skipping it'); clipDone(); } });
   // iOS can pause the audio (a call, Siri, a navigation prompt). While driving, start it again,
   // or iOS hands the steering-wheel buttons to another app.
   player.addEventListener('pause', () => {
     if (!driving) return;
     setTimeout(() => { if (driving && player.paused && !player.ended) player.play().catch(playFailed); }, 800);
   });
+  let heartbeat = null;
 
   // ---------- Driving ----------
   let driving = false;
   let current = null;   // card being played
-  let stage = 'idle';   // question | answer | feedback | waiting | done
+  let stage = 'idle';   // question | answer | waiting | done
   let shownAt = 0;
   let waitTimer = null;
   let backTimer = null;
+  let backPresses = 0;
   let playedThisDrive = 0;
+  let lastBlock = null; // the furthest deck reached this drive, for the "<deck> done" cue
 
   function setScreen(text, extra = '') {
     $('d-stage').textContent = text;
@@ -456,6 +517,7 @@
     const left = todaysCards().filter(cardReady).length;
     return `${playedThisDrive} done this drive · ${left} left`;
   }
+  const cue = (which) => (list.announce && audioReady.has(which.audio) ? which.audio : null);
 
   function goNext() {
     clearTimeout(waitTimer);
@@ -468,7 +530,12 @@
       $('d-deck').textContent = current.deck;
       $('card-text').textContent = $('show-text').checked ? current.question : '';
       setScreen('Question', counts());
-      playClip(current.q_audio);
+      // Moving on to the next deck: say the last one is done first.
+      const done = lastBlock !== null && current.block > lastBlock && list.announce ? cue(list.announce.blocks[lastBlock]) : null;
+      lastBlock = Math.max(lastBlock ?? current.block, current.block);
+      const card = current;
+      if (done) playClip(done, () => { if (current === card && stage === 'question') playClip(card.q_audio); });
+      else playClip(current.q_audio);
     } else if (pick.waitUntil) {
       current = null;
       stage = 'waiting';
@@ -479,10 +546,12 @@
       waitTimer = setTimeout(goNext, Math.min(60000, Math.max(1000, pick.waitUntil - now())));
     } else {
       current = null;
+      const first = stage !== 'done';
       stage = 'done';
       setScreen('All done for today 🎉', counts());
       $('card-text').textContent = '';
-      playSound('good', null);
+      const end = list.announce ? cue(list.announce.end) : null;
+      if (first && end) playClip(end); else playSilence();
     }
   }
 
@@ -496,42 +565,56 @@
       grade(3);
     } else if (stage === 'waiting' || stage === 'done') {
       goNext();
-    } else if (stage === 'feedback') {
-      afterClip = null;
-      goNext();
     }
   }
 
+  // ⏮ on a question: once = repeat it, twice quickly = undo the last answer, three times = skip
+  // the card as not audio-friendly. Presses are counted for 0.6 s after the last one.
   function back() {
     if (stage === 'answer') { grade(1); return; }
-    if (stage === 'feedback') { afterClip = null; goNext(); return; }
+    if (stage !== 'question' && stage !== 'waiting' && stage !== 'done') return;
+    backPresses += 1;
+    clearTimeout(backTimer);
+    if (backPresses >= 3) { backPresses = 0; backAction(3); return; }
+    backTimer = setTimeout(() => { const n = backPresses; backPresses = 0; backAction(n); }, 600);
+  }
+  function backAction(presses) {
+    if (presses === 2) { undo(); return; }
     if (stage !== 'question') return;
-    if (backTimer) {
-      // Second press within half a second: skip this card as not audio friendly.
-      clearTimeout(backTimer);
-      backTimer = null;
+    if (presses === 3) {
       skip(current);
-      playSound('again', goNext);
+      setScreen('Skipped (not audio-friendly)', counts());
+      goNext();
       return;
     }
-    backTimer = setTimeout(() => {
-      backTimer = null;
-      shownAt = now();
-      playClip(current.q_audio); // repeat the question
-    }, 500);
+    shownAt = now();
+    playClip(current.q_audio); // repeat the question
+  }
+  function undo() {
+    const card = undoLast();
+    if (!card) { if (stage === 'question') playClip(current.q_audio); return; }
+    playedThisDrive = Math.max(0, playedThisDrive - 1);
+    clearTimeout(waitTimer);
+    current = card;
+    stage = 'answer';
+    shownAt = now();
+    $('d-deck').textContent = current.deck;
+    if ($('show-text').checked) $('card-text').textContent = `${current.question}\n\n→ ${current.answer}`;
+    setScreen('Undone · ⏭ Good  ⏮ Again', counts());
+    playClip(current.a_audio);
   }
 
   function grade(rating) {
-    stage = 'feedback';
     answer(current, rating);
     playedThisDrive += 1;
-    setScreen(rating === 3 ? 'Good ✓' : 'Again ↺', counts());
-    playSound(rating === 3 ? 'good' : 'again', goNext);
+    goNext(); // straight on to the next question: no sound in between
   }
 
-  function startDrive() {
+  async function startDrive() {
     driving = true;
     playedThisDrive = 0;
+    lastBlock = null;
+    history.length = 0;
     playSilence(); // must start from the Start tap: iOS only allows audio after a tap
     if (navigator.mediaSession) {
       navigator.mediaSession.setActionHandler('nexttrack', forward);
@@ -541,13 +624,23 @@
       navigator.mediaSession.setActionHandler('pause', () => setTimeout(() => player.paused && playSilence(), 300));
     }
     show('drive');
+    setScreen('Getting the cards ready…');
+    await loadForDrive();
+    // Keep the audio running: if anything paused it, start it again.
+    clearInterval(heartbeat);
+    heartbeat = setInterval(() => {
+      if (driving && player.paused) { log('audio was paused, restarting it'); player.play().catch(playFailed); }
+    }, 5000);
+    log(`drive started (app ${APP_VERSION})`);
     goNext();
   }
   function stopDrive() {
     driving = false;
     stage = 'idle';
     clearTimeout(waitTimer);
+    clearInterval(heartbeat);
     player.pause();
+    memory.clear();
     show('home');
     uploadGrades();
     showHome();
@@ -583,7 +676,7 @@
     audioReady = new Set(await DB.keys('audio'));
     await loadState();
     showHome();
-    loadSounds();
+    log(`app version ${APP_VERSION} started`);
     refresh();
   }
 
@@ -621,7 +714,7 @@
 
   // Lets a desktop browser simulate the buttons and the clock while testing.
   window.carReviewTest = {
-    forward, back, next: () => goNext(), advance: (ms) => { clockOffset += ms; },
+    forward, back, undo, next: () => goNext(), advance: (ms) => { clockOffset += ms; },
     get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
   };
 

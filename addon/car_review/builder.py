@@ -13,6 +13,9 @@ Each deck ("block") is played in full before the next, in the order given.
 - Tomorrow's reviews are added (labelled with their day), ordered by the deck preset's review
   sort order, so a list made at night works the next morning. The app only plays cards due
   on the current Anki day.
+- New cards are left out (reviews and learning cards only): which new cards Anki shows depends on
+  burying and how many you want that day, so they're best done in Anki itself.
+- Each deck gets a short spoken "<deck> done." clip, and the list an "All decks done." clip.
 """
 
 from __future__ import annotations
@@ -36,7 +39,8 @@ def audio_fingerprint(text: str) -> str:
     return hashlib.sha256(f"{VOICE}|{VOICE_VERSION}|{text}".encode()).hexdigest()
 
 
-def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now: float | None = None) -> dict:
+def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now: float | None = None,
+               include_new: bool = False) -> dict:
     now = time.time() if now is None else now
     sched = col.sched
     today = sched.today
@@ -62,6 +66,9 @@ def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now:
                 if card.id in seen_cards:
                     continue
                 seen_cards.add(card.id)
+                if kind == "new" and not include_new:
+                    skipped["new card (the car plays reviews)"] = skipped.get("new card (the car plays reviews)", 0) + 1
+                    continue
                 entry = _card_entry(col, card, kind, again, good, block, name, due_day, skipped)
                 if entry is None:
                     continue
@@ -95,7 +102,21 @@ def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now:
         "review_limits": review_limits,  # per block, for the phone's fallback when no list of today arrives
         "cards": cards,
         "skipped": skipped,
+        # Spoken cues: "<deck> done." per block, and one at the very end.
+        "announce": {
+            "blocks": [_clip(f"{_spoken_deck(name)} done.") for name in deck_names],
+            "end": _clip("All decks done."),
+        },
     }
+
+
+def _spoken_deck(name: str) -> str:
+    """'Step 1::Past Blocks' is said as 'Past Blocks'."""
+    return name.split("::")[-1].replace("_", " ").strip()
+
+
+def _clip(text: str) -> dict:
+    return {"text": text, "audio": audio_fingerprint(text)}
 
 
 def _block_cards(col: Collection, did: int, today: int, days_ahead: int):

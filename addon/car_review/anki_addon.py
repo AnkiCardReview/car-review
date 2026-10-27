@@ -4,6 +4,9 @@ Automatic:
 - First run: the setup wizard (settings.py) opens by itself, once.
 - When Anki opens (after its opening sync): if there are car grades, show what they'd do,
   with an Apply button. Then remind you if upcoming car cards still need audio.
+- While Anki is open (every 10 minutes, after a sync, and when you finish reviewing): car grades
+  are picked up the same way, and if your cards changed, a fresh list goes to the phone, so
+  the phone never replays cards you've already done on the laptop.
 - When Anki closes: send the car list (today plus the next few days) to your phone. This is
   quick: only cards that already have audio are sent. If "auto_voice" is on and the laptop is
   plugged in, missing audio is made too, after Anki has closed. On the charger in the evening,
@@ -82,11 +85,22 @@ def missing_audio(pack: dict) -> int:
                if not (CACHE / f"{c['q_audio']}.mp3").exists() or not (CACHE / f"{c['a_audio']}.mp3").exists())
 
 
+_last_sent_mod = None  # the collection's modified time when the last list was sent
+
+
 def start_send(pack: dict, voice: bool) -> None:
+    """Hand the list to the helper. A window only appears when there's audio to make; a quick
+    send (a few seconds) runs without one."""
+    global _last_sent_mod
     pack["voice_missing"] = voice
     PACK.parent.mkdir(parents=True, exist_ok=True)
     PACK.write_text(json.dumps(pack), encoding="utf-8")
-    start_helper("send", "--pack", str(PACK))
+    quiet = not (voice and missing_audio(pack))
+    start_helper("send", "--pack", str(PACK), *(["--no-window"] if quiet else []))
+    try:
+        _last_sent_mod = mw.col.mod if mw.col else None
+    except Exception:
+        _last_sent_mod = None
     remember_for_morning()
 
 
@@ -224,6 +238,64 @@ def first_run() -> None:
 def on_sync_finished() -> None:
     if _startup_pending:
         startup_check()
+    else:
+        keep_in_step_soon()
+
+
+# ---------- Keeping the phone in step while Anki stays open ----------
+
+_keep_timer: QTimer | None = None
+_busy = False
+
+
+def keep_in_step_soon(delay_ms: int = 5_000) -> None:
+    """Pick up car grades and send a fresh list shortly (calls close together count once)."""
+    global _keep_timer
+    if _keep_timer is None:
+        _keep_timer = QTimer(mw)
+        _keep_timer.setSingleShot(True)
+        _keep_timer.timeout.connect(keep_in_step)
+    _keep_timer.start(delay_ms)
+
+
+def keep_in_step() -> None:
+    global _busy
+    if _busy or _startup_pending or not mw.col or not setting("decks") or not helper_python().exists():
+        return
+    if mw.state == "review":  # never change cards under you while you review
+        keep_in_step_soon(120_000)
+        return
+    _busy = True
+
+    def finished() -> None:
+        global _busy
+        _busy = False
+        send_if_changed()
+
+    check_grades(mode="auto", then=finished)
+
+
+def send_if_changed() -> None:
+    """Send a fresh list if the collection changed since the last one (reviews on the laptop,
+    applied car grades, a sync). Quick and windowless unless there's audio to make."""
+    if not mw.col or mw.col.mod == _last_sent_mod:
+        return
+
+    def done(pack: dict) -> None:
+        if not pack["cards"]:
+            return
+        voice = bool(setting("auto_voice")) and on_charger()
+        missing = missing_audio(pack) if voice else 0
+        start_send(pack, voice=voice)
+        if missing:
+            tooltip(f"Car Review: making audio for {missing} cards in the background, then sending.", period=6000)
+
+    QueryOp(parent=mw, op=build, success=done).failure(lambda err: print(f"Car Review: {err}")).run_in_background()
+
+
+def on_state_change(new_state: str, old_state: str) -> None:
+    if old_state == "review" and new_state != "review":
+        keep_in_step_soon()
 
 
 def startup_check() -> None:
@@ -233,7 +305,7 @@ def startup_check() -> None:
     _startup_pending = False
     if not setting("decks") or not helper_python().exists():
         return
-    check_grades(on_startup=True)
+    check_grades(mode="startup")
 
 
 def remind_about_audio() -> None:
@@ -251,7 +323,13 @@ def remind_about_audio() -> None:
 
 # ---------- Applying car grades ----------
 
-def check_grades(on_startup: bool = False) -> None:
+_declined: set = set()  # grade sets you pressed Cancel on: not offered again by the automatic checks
+
+
+def check_grades(mode: str = "manual", then=None) -> None:
+    """mode: "startup" (Anki just opened), "auto" (while open, quietly) or "manual" (the menu)."""
+    on_startup = mode != "manual"
+    finish = then or (lambda: None)
     def fetch_and_plan(col):
         result = run_helper("fetch-grades")
         if result.returncode != 0:
@@ -262,30 +340,39 @@ def check_grades(on_startup: bool = False) -> None:
         files = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(INBOX.glob("*.json"))]
         return (plan_grades(col, files) if files else None), names
 
+    def after() -> None:
+        if mode == "startup":
+            remind_about_audio()
+        finish()
+
     def done(result) -> None:
         plan, names = result
         if plan is None or (not plan.cards and not plan.skip_tags):
             if names:
                 subprocess.Popen(helper_command("delete-grades", *names), cwd=str(ADDON_DIR.parent),
                                  creationflags=_flags(True))
-            if not on_startup:
+            if mode == "manual":
                 tooltip("No car answers waiting. After a drive, check that the phone shows “✓ all” "
                         "next to Grades uploaded.", period=8000)
-            else:
-                remind_about_audio()
+            after()
             return
+        key = (tuple(names), plan.grade_count)
         if on_startup and setting("auto_apply") and not plan.late_days:
-            apply_now(plan, names, allow_late=False, then=remind_about_audio)
+            apply_now(plan, names, allow_late=False, then=after)
+        elif mode == "auto" and key in _declined:
+            finish()  # you said Cancel to exactly these; Tools ▸ Car Review ▸ Apply car grades offers them again
         else:
-            confirm_apply(plan, names, then=remind_about_audio if on_startup else None)
+            confirm_apply(plan, names, then=after, on_cancel=lambda: _declined.add(key))
 
     def failed(err: Exception) -> None:
-        if on_startup:
+        if mode == "startup":
             tooltip("Car Review: couldn't check for car answers (are you offline?). "
                     "Try Tools ▸ Car Review ▸ Apply car grades later.", period=8000)
-            print(f"Car Review: {err}")
-        else:
+        if mode == "manual":
             showWarning(str(err))
+        else:
+            print(f"Car Review: {err}")
+        finish()
 
     op = QueryOp(parent=mw, op=fetch_and_plan, success=done).failure(failed)
     (op if on_startup else op.with_progress("Checking car grades…")).run_in_background()
@@ -294,10 +381,10 @@ def check_grades(on_startup: bool = False) -> None:
 def apply_car_grades() -> None:
     if need_setup():
         return
-    check_grades(on_startup=False)
+    check_grades(mode="manual")
 
 
-def confirm_apply(plan: Plan, names: list[str], then=None) -> None:
+def confirm_apply(plan: Plan, names: list[str], then=None, on_cancel=None) -> None:
     goods = sum(1 for c in plan.cards for g in c.grades if g["rating"] == 3)
     agains = plan.grade_count - goods
 
@@ -338,6 +425,8 @@ def confirm_apply(plan: Plan, names: list[str], then=None) -> None:
     layout.addWidget(buttons)
     apply_button.setDefault(True)
     if dialog.exec() != QDialog.DialogCode.Accepted:
+        if on_cancel:
+            on_cancel()
         if then:
             then()
         return
@@ -440,6 +529,11 @@ def setup() -> None:
     gui_hooks.profile_did_open.append(on_profile_open)
     gui_hooks.sync_did_finish.append(on_sync_finished)
     gui_hooks.profile_will_close.append(on_close)
+    gui_hooks.state_did_change.append(on_state_change)
+    # Every 10 minutes while Anki is open: car grades in, fresh list out (quiet when nothing changed).
+    timer = QTimer(mw)
+    timer.timeout.connect(keep_in_step)
+    timer.start(10 * 60_000)
 
 
 setup()

@@ -45,7 +45,7 @@ def main() -> None:
 
     with collection_copy(args.profile) as col:
         today = col.sched.today
-        pack = build_pack(col, args.decks)
+        pack = build_pack(col, args.decks, include_new=True)
         due_today = [c for c in pack["cards"] if c["kind"] == "review" and c["due_day"] <= today]
         new = [c for c in pack["cards"] if c["kind"] == "new"]
         if len(due_today) < 6 or len(new) < 1:
@@ -142,6 +142,18 @@ def main() -> None:
             check("long drive: one Undo restores every card", all(snapshot(col, cid) == before_long[cid] for cid in many))
         else:
             print(f"(long-drive check skipped: only {len(many)} more reviews due today)")
+
+        # Picked up mid-drive: the car Again is applied first, the Good after it arrives later.
+        if len(due_today) >= 48:
+            split = due_today[47]["cid"]
+            first = {"grades": [g(split, 1, 60)]}
+            apply_plan(col, plan_grades(col, [first]))
+            both = {"grades": first["grades"] + [g(split, 3, 76)]}
+            second = plan_grades(col, [both])
+            check("mid-drive pickup: the later Good still applies after the Again was applied",
+                  [c.cid for c in second.cards] == [split] and len(second.cards[0].grades) == 1, f"{second.skipped}")
+        else:
+            print("(mid-drive check skipped: not enough reviews due today)")
 
         # A realistic late case: a new card learned in the car yesterday, applied today.
         late = new[1]["cid"] if len(new) > 1 else late

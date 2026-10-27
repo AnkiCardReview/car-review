@@ -87,8 +87,9 @@
       <div class="stat"><span>⏭ again</span><b class="ok">Good</b></div>
       <div class="stat"><span>⏮ Previous track</span><b class="bad">Again</b></div>
       <div class="stat"><span>⏮ before the answer</span><b>Repeat the question</b></div>
-      <div class="stat"><span>⏮⏮ quickly</span><b>Skip: doesn't work as audio</b></div>
-      <p>Works with steering-wheel buttons, AirPods (double-tap = ⏭, triple-tap = ⏮) and most Bluetooth headphones. Nothing plays on its own: after a question it waits as long as you like. A bright chime means Good, a low one means Again.</p>
+      <div class="stat"><span>⏮⏮ quickly</span><b>Undo the last answer</b></div>
+      <div class="stat"><span>⏮⏮⏮ quickly</span><b>Skip: doesn't work as audio</b></div>
+      <p>Works with steering-wheel buttons, AirPods (double-tap = ⏭, triple-tap = ⏮) and most Bluetooth headphones. Nothing plays on its own: after a question it waits as long as you like. After you grade a card the next question starts straight away, and the voice says when a deck is done.</p>
     </div>
     <div class="panel">
       <p><b style="color: var(--text)">Each drive</b></p>
@@ -151,10 +152,10 @@
       <button id="d-back" class="again">⏮<br>Back</button>
       <button id="d-fwd" class="good">⏭<br>Forward</button>
     </div>
-    <p class="center">⏭ answer, then ⏭ Good · ⏮ Again · ⏮ before the answer repeats<br>⏮⏮ (double) skips a card that doesn't work as audio</p>
+    <p class="center">⏭ answer, then ⏭ Good · ⏮ Again · ⏮ before the answer repeats<br>⏮⏮ undoes the last answer · ⏮⏮⏮ skips a card that doesn't work as audio</p>
     <button id="d-stop">Stop</button>
   </section>
 </main>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

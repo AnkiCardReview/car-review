@@ -58,9 +58,9 @@ Before anything is applied:
 The car itself works like Anki too: a card you miss comes back after your learning step, cards are played in the order Anki would show them, one deck at a time, and only cards due today are played.
 
 ## Which cards are played
-- Cloze cards in the decks you chose: reviews due today, learning cards, and new cards up to each deck's daily limit.
+- Cloze cards in the decks you chose: reviews due today and learning cards (no new cards).
 - One card per note per day, as Anki's sibling burying does.
-- **Skipped automatically** (they stay due in Anki): non-cloze cards, cards with an image, table or audio on the front, cards that point at a picture ("shown", "labeled", "arrow"), questions over 60 words, AnKing "one by one" cards, and cards you double-pressed ⏮ on in the car (tagged `car-review::skip`).
+- **Skipped automatically** (they stay due in Anki): non-cloze cards, cards with an image, table or audio on the front, cards that point at a picture ("shown", "labeled", "arrow"), questions over 60 words, AnKing "one by one" cards, and cards you triple-pressed ⏮ on in the car (tagged `car-review::skip`). New cards aren't played in the car either: which ones Anki shows depends on burying and how many you want that day, so they're best done in Anki.
 - **Read naturally:** formatting is removed, symbols become words (↑ "increased", → "leads to"), ranges and units are spoken ("24–28 mg/dL" → "24 to 28 milligrams per deciliter"), and common shorthand is expanded. A blank is said as "blank", or as its hint ("…is *which drug?*").
 
 ## The audio

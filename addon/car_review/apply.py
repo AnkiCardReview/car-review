@@ -100,7 +100,7 @@ def plan_grades(col: Collection, grade_files: list[dict]) -> Plan:
 
     for cid, grades in sorted(by_card.items(), key=lambda kv: min(g["at"] for g in kv[1])):
         grades.sort(key=lambda g: g["at"])
-        reason = _card_problem(col, cid, grades, today)
+        reason = _card_problem(col, cid, grades, today, ledger)
         if reason:
             plan.skipped[reason] += 1
             continue
@@ -111,7 +111,7 @@ def plan_grades(col: Collection, grade_files: list[dict]) -> Plan:
     return plan
 
 
-def _card_problem(col: Collection, cid: int, grades: list[dict], today: int) -> str | None:
+def _card_problem(col: Collection, cid: int, grades: list[dict], today: int, ledger: dict) -> str | None:
     row = col.db.first("select queue, type, due from cards where id = ?", cid)
     if not row:
         return "card deleted"
@@ -119,7 +119,9 @@ def _card_problem(col: Collection, cid: int, grades: list[dict], today: int) -> 
     if queue < 0:
         return "suspended or buried"
     made_at_ms = min(int(g.get("list", 0)) for g in grades) * 1000
-    ours = {g["at"] for g in grades}
+    # Car answers count as ours, including ones applied earlier (Anki picks grades up during a
+    # drive too, so a car Again can be applied before the Good that followed it).
+    ours = {g["at"] for g in grades} | {at for key, at in ledger.items() if key.startswith(f"{cid}:")}
     elsewhere = col.db.list("select id from revlog where cid = ? and id > ?", cid, made_at_ms)
     if any(rid not in ours for rid in elsewhere):
         return "reviewed elsewhere after the car list was made"

@@ -2,7 +2,7 @@
 
 - Today's part matches Anki's own study queue (so buried siblings, limits and order are Anki's).
 - Cards buried today are in the list from tomorrow.
-- Unfinished new and learning cards carry over (they stay playable on later days).
+- New cards are left out (the car plays reviews and learning cards); learning cards carry over.
 - No note has two cards on the same day.
 - Every review is placed within the window, never before its due day.
 
@@ -55,16 +55,22 @@ def main() -> None:
                                       f"and (type = 0 or (type = 2 and due <= ?))", today + args.days))
 
         listed_today = {cid for cid, c in cards.items() if c["due_day"] <= today}
-        missing = {cid for cid in in_queue if cid not in cards}
-        check("every card in Anki's queue today is listed (unless skipped as not audio-friendly)",
-              len(missing) <= skipped_total, f"{len(missing)} missing")
+        new_in_queue = {cid for cid in in_queue if col.get_card(cid).queue == 0}
+        missing = {cid for cid in in_queue - new_in_queue if cid not in cards}
+        not_new_skipped = skipped_total - pack["skipped"].get("new card (the car plays reviews)", 0)
+        check("every review and learning card in Anki's queue today is listed (unless not audio-friendly)",
+              len(missing) <= not_new_skipped, f"{len(missing)} missing")
         check("nothing extra is playable today beyond Anki's queue and learning cards",
               all(cid in in_queue or cards[cid]["kind"] == "learn" for cid in listed_today))
         listed_buried = [cid for cid in buried if cid in cards]
         check(f"buried cards come back from tomorrow ({len(listed_buried)} of {len(buried)} listed; the rest skipped)",
               all(cards[cid]["due_day"] >= today + 1 for cid in listed_buried) and len(buried) - len(listed_buried) <= skipped_total)
-        check("unfinished new cards stay playable on later days (due day = today)",
-              all(c["due_day"] <= today + 1 for c in cards.values() if c["kind"] == "new"))
+        check(f"no new cards in the car list ({len(new_in_queue)} new in Anki's queue left out)",
+              not any(c["kind"] == "new" for c in cards.values()))
+        announce = pack.get("announce") or {}
+        check("a spoken 'done' clip for every deck and for the end",
+              len(announce.get("blocks", [])) == len(args.decks) and bool(announce.get("end", {}).get("audio")),
+              str([a["text"] for a in announce.get("blocks", [])]))
         per_note_day = Counter((col.get_card(cid).nid, c["due_day"]) for cid, c in cards.items() if c["kind"] == "review")
         clashes = [k for k, n in per_note_day.items() if n > 1]
         check("no note has two reviews on the same day", not clashes, f"{len(clashes)} clashes")

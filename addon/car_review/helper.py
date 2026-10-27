@@ -134,7 +134,17 @@ def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int, un
         c["q_audio"] = pairing.audio_name(c["q_audio"])
         c["a_audio"] = pairing.audio_name(c["a_audio"])
         out["cards"].append(c)
+    if pack.get("announce"):
+        rename = lambda a: dict(a, audio=pairing.audio_name(a["audio"]))  # noqa: E731
+        out["announce"] = {"blocks": [rename(a) for a in pack["announce"]["blocks"]],
+                           "end": rename(pack["announce"]["end"])}
     return json.dumps(out, separators=(",", ":")).encode()
+
+
+def announce_clips(pack: dict) -> list[dict]:
+    """The spoken cues in a list: "<deck> done." per block and "All decks done."."""
+    a = pack.get("announce") or {}
+    return [*a.get("blocks", []), *([a["end"]] if a.get("end") else [])]
 
 
 LOCK = HOME / "helper.lock"
@@ -284,6 +294,17 @@ def send(pack_path: Path, progress: Progress) -> None:
             voicing = voicing or pack.get("voice_missing", True)
             progress.title = "Car Review: making audio and sending" if voicing else "Car Review: sending to your car"
 
+            # The few spoken cues first: made when voicing, uploaded whenever they're ready.
+            for cue in announce_clips(pack):
+                path = CACHE / f"{cue['audio']}.mp3"
+                if not path.exists() and voicing and on_charger():
+                    path.write_bytes(voice.mp3(cue["text"]))
+                    made += 1
+                name = pairing.audio_name(cue["audio"])
+                if path.exists() and name not in on_relay:
+                    relay.put(name, path.read_bytes())
+                    on_relay.add(name)
+
             def clips(card: dict) -> tuple:
                 return (card["q_audio"], card["question"]), (card["a_audio"], card["answer"])
 
@@ -353,8 +374,7 @@ def send(pack_path: Path, progress: Progress) -> None:
         if unvoiced:
             message += (f" {unvoiced:,} cards have no audio yet: plug in and use "
                         "Tools ▸ Car Review ▸ Prepare audio.")
-        # A quick send with nothing to report closes its window by itself.
-        progress.auto_close = not made and not unvoiced and not progress.stopped
+        progress.auto_close = True  # the result is also in Tools ▸ Car Review ▸ Status
         progress.finish(message + (" Stopped early." if progress.stopped else " Done ✓"))
     except Exception as err:
         write_status(state="error", error=str(err), detail=traceback.format_exc()[-2000:])
