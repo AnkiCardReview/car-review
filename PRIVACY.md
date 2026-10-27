@@ -17,6 +17,7 @@ Car Review is a free, open-source project. It's built so that nobody but you can
 | Your Anki collection | Your computer (and AnkiWeb, if you use Anki's own sync, under Anki's own privacy policy) | You. Car Review never uploads it |
 | Car list: the spoken text of your due cards, their audio, and scheduling details (card IDs, due days, learning steps) | Encrypted, in your own mailbox on the relay, for at most 3 days. Decrypted copies on your phone | Only your devices |
 | Your car answers: card ID, Again or Good, the time, how long you took | On your phone until uploaded; encrypted in your mailbox until applied (at most 3 days); then as normal reviews in your Anki collection | Only your devices |
+| Clip timings: for each clip, how long it took to start after a button press, how long it played and how long you took to press after it (times only, no card text) | Sent along with your answers, encrypted the same way; then the last 14 days on your computer (`CarReview/timing`), for speed tuning | Only your devices |
 | The pairing key (the QR code) | Your computer (`CarReview/pairing.json` in your home folder) and your phone's browser storage | Only you |
 | Audio clips and the voice | Your computer (`CarReview` folder) | Only you |
 | Car Review settings | Your Anki profile (add-on config) | Only you |
