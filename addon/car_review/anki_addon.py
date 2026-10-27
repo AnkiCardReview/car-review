@@ -6,7 +6,8 @@ Automatic:
   with an Apply button. Then remind you if upcoming car cards still need audio.
 - When Anki closes: send the car list (today plus the next few days) to your phone. This is
   quick: only cards that already have audio are sent. If "auto_voice" is on and the laptop is
-  plugged in, missing audio is made too, after Anki has closed.
+  plugged in, missing audio is made too, after Anki has closed. On the charger in the evening,
+  the helper also keeps the laptop awake until Anki's next day starts and sends that day's list.
 
 Tools ▸ Car Review menu: Settings, Send to Car, Prepare audio, Apply car grades, Pair phone,
 Status, Help.
@@ -187,6 +188,9 @@ def on_close() -> None:
             return
         pack = build(mw.col)
         start_send(pack, voice=bool(setting("auto_voice")) and on_charger())
+        # On the charger at night: stay awake for the morning list (it decides, and gives up if unplugged).
+        if (mw.addonManager.getConfig(__name__) or {}).get("morning_job", True):
+            start_helper("overnight")
     except Exception as err:  # closing Anki must never fail because of Car Review
         print(f"Car Review: couldn't send on close: {err}")
 

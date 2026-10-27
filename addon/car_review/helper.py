@@ -4,6 +4,7 @@ Runs in the Car Review Python environment (it needs the Kokoro voice and `crypto
 started by the add-on so it can keep going after Anki closes:
 
     python -m car_review.helper send   --pack pack.json
+    python -m car_review.helper overnight   # after closing Anki: wait for the next day's list
     python -m car_review.helper status
 
 Audio is cached on this computer by fingerprint, so each clip is only ever made once. The
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import requests
 
-from .common import CACHE, HOME, INBOX, PAIRING, RELAY, STATUS, load_pairing, pairing_link
+from .common import CACHE, HOME, INBOX, PACK, PAIRING, RELAY, STATUS, load_pairing, pairing_link
 from .pairing import Pairing
 from .power import on_charger
 from .ui import Progress, run_with_window
@@ -125,6 +126,9 @@ class Relay:
 def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int, unvoiced: int = 0) -> bytes:
     """The list the phone downloads: clips named by their relay name, nothing else changed."""
     out = dict(pack, cards=[], pending=pending, unvoiced=unvoiced)
+    # Cards not on the phone yet still count as siblings for the phone's fallback: [note, day].
+    sent = {c["cid"] for c in cards}
+    out["held_back"] = [[c["nid"], c["due_day"]] for c in pack["cards"] if c["cid"] not in sent]
     for c in cards:
         c = dict(c)
         c["q_audio"] = pairing.audio_name(c["q_audio"])
@@ -134,6 +138,10 @@ def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int, un
 
 
 LOCK = HOME / "helper.lock"
+OVERNIGHT_LOCK = HOME / "overnight.lock"
+LAST_SENT = HOME / "last-sent.json"  # the Anki day of the last list that reached the phone
+OVERNIGHT_MAX_WAIT = 12 * 3600       # only wait overnight, not from a midday close
+MORNING_DELAY = 35 * 60              # after the rollover; the 4:30 task goes first if it runs
 
 
 def pid_alive(pid: int) -> bool:
@@ -156,18 +164,98 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
-def take_lock() -> bool:
+def take_lock(lock: Path = LOCK) -> bool:
     """Only one send runs at a time. A later request just leaves a newer pack for it to pick up."""
     import os
 
-    if LOCK.exists():
+    if lock.exists():
         try:
-            if pid_alive(int(LOCK.read_text())):
+            if pid_alive(int(lock.read_text())):
                 return False
         except ValueError:
             pass
-    LOCK.write_text(str(os.getpid()))
+    lock.write_text(str(os.getpid()))
     return True
+
+
+def log(text: str) -> None:
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}", flush=True)
+
+
+def anki_day_at(pack: dict, when: float) -> int:
+    """The Anki day number at a given time, from a list's day and its next rollover."""
+    if when < pack["next_day_at"]:
+        return pack["anki_today"]
+    return pack["anki_today"] + 1 + int((when - pack["next_day_at"]) // 86400)
+
+
+def last_sent_day() -> int:
+    try:
+        return int(json.loads(LAST_SENT.read_text())["anki_today"])
+    except (OSError, ValueError, KeyError):
+        return -1
+
+
+def morning_send(progress: Progress) -> None:
+    """Build today's exact list from Anki's scheduler (on a copy of the collection) and send it."""
+    from . import morning
+
+    try:
+        pack = morning.build_morning_pack()
+    except Exception as err:
+        write_status(state="error", error=f"morning list: {err}")
+        raise
+    settings = json.loads(morning.SETTINGS.read_text())
+    pack["voice_missing"] = bool(settings.get("auto_voice")) and on_charger()
+    path = HOME / "outbox" / "pack.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(pack), encoding="utf-8")
+    send(path, progress)
+
+
+def overnight(pack_path: Path, wait_until: float | None = None) -> None:
+    """Started when Anki closes. On the charger in the evening, keep the laptop awake (the screen
+    can still turn off) until shortly after Anki's next day starts, then send that day's exact
+    list, so the phone has it before the morning drive even if the laptop can't wake itself for
+    the 4:30 task. Gives up as soon as the laptop is unplugged, and skips the send if today's
+    list already reached the phone (the 4:30 task, or Anki opened and closed again)."""
+    if not take_lock(OVERNIGHT_LOCK):
+        log("overnight: already waiting for the morning list")
+        return
+    try:
+        pack = json.loads(pack_path.read_text(encoding="utf-8"))
+        target = wait_until if wait_until is not None else pack["next_day_at"] + MORNING_DELAY
+        day = anki_day_at(pack, target)
+        if not on_charger():
+            log("overnight: on battery, not waiting (the 4:30 task runs when the laptop next wakes)")
+            return
+        if target - time.time() > OVERNIGHT_MAX_WAIT:
+            log("overnight: the next Anki day is too far off, not waiting")
+            return
+        if last_sent_day() >= day:
+            log("overnight: that day's list was already sent")
+            return
+        log(f"overnight: keeping the laptop awake until {time.strftime('%H:%M', time.localtime(target))} "
+            "for the morning list (the screen can turn off)")
+        keep_awake(True)
+        try:
+            while time.time() < target:
+                if not on_charger():
+                    log("overnight: unplugged, stopped waiting")
+                    return
+                if last_sent_day() >= day:
+                    break
+                time.sleep(min(60, max(1, target - time.time())))
+            if last_sent_day() >= day:
+                log("overnight: today's list was already sent")
+                return
+            log("overnight: making the morning list")
+            morning_send(Progress("Car Review: morning list"))
+            log(f"overnight: done ({'sent' if last_sent_day() >= day else 'not sent, see status'})")
+        finally:
+            keep_awake(False)  # the laptop can sleep again
+    finally:
+        OVERNIGHT_LOCK.unlink(missing_ok=True)
 
 
 def send(pack_path: Path, progress: Progress) -> None:
@@ -185,13 +273,15 @@ def send(pack_path: Path, progress: Progress) -> None:
     keep_awake(True)
     started = time.time()
     made = 0
+    voicing = False
     try:
         on_relay = relay.names("audio/")
         while True:
             loaded_at = pack_path.stat().st_mtime
             pack = json.loads(pack_path.read_text(encoding="utf-8"))
             cards = pack["cards"]
-            voicing = pack.get("voice_missing", True)
+            # Once asked to make audio (Prepare audio), a newer quick list (closing Anki) keeps it going.
+            voicing = voicing or pack.get("voice_missing", True)
             progress.title = "Car Review: making audio and sending" if voicing else "Car Review: sending to your car"
             progress.unit = "cards"
             # Voice the nearest due days first; the phone list keeps Anki's play order.
@@ -231,6 +321,8 @@ def send(pack_path: Path, progress: Progress) -> None:
                 continue  # start over with the newer list; finished clips are reused
             ready = [cards[j] for j in sorted(ready_idx)]
             relay.put("list", phone_list(pack, ready, pairing, pending=0, unvoiced=unvoiced))
+            LAST_SENT.write_text(json.dumps({"anki_today": pack["anki_today"], "made_at": pack["made_at"],
+                                             "sent": int(time.time())}))
             break
         state = "stopped" if progress.stopped else "done"
         write_status(state=state, ready=len(ready), total=len(cards), made=made, unvoiced=unvoiced,
@@ -312,6 +404,9 @@ def main() -> None:
     sub.add_parser("voice-check", help="make one short clip to check the voice works")
     sub.add_parser("fetch-grades", help="download and decrypt the phone's grades into the inbox folder")
     sub.add_parser("morning", help="send today's exact list from Anki's scheduler (run by the daily task)")
+    o = sub.add_parser("overnight", help="on the charger, stay awake until Anki's next day, then send the morning list")
+    o.add_argument("--pack", type=Path, default=PACK)
+    o.add_argument("--wait-until", type=float, help="epoch seconds (for testing; default: rollover + 35 min)")
     sub.add_parser("schedule", help="create or update the daily morning-list task")
     sub.add_parser("unschedule", help="remove the daily morning-list task")
     d = sub.add_parser("delete-grades", help="delete grade files from the relay once they're applied")
@@ -359,19 +454,9 @@ def main() -> None:
         for name in args.names:
             relay.session.delete(f"{relay.box}/{name}", timeout=60)
     elif args.cmd == "morning":
-        from . import morning
-
-        try:
-            pack = morning.build_morning_pack()
-        except Exception as err:
-            write_status(state="error", error=f"morning list: {err}")
-            raise
-        settings = json.loads(morning.SETTINGS.read_text())
-        pack["voice_missing"] = bool(settings.get("auto_voice")) and on_charger()
-        path = HOME / "outbox" / "pack.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(pack), encoding="utf-8")
-        send(path, Progress("Car Review: morning list"))  # silent: no window at 4:30 am
+        morning_send(Progress("Car Review: morning list"))  # silent: no window at 4:30 am
+    elif args.cmd == "overnight":
+        overnight(args.pack, args.wait_until)
     elif args.cmd == "schedule":
         from . import morning
 

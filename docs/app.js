@@ -121,7 +121,35 @@
   // study queue for the day (buried siblings, limits and order all Anki's). Cards for later days
   // are sent ahead only so their audio downloads early; the morning list decides what's played.
   const listIsToday = () => !!list && list.anki_today === ankiDay();
-  function isDueToday(c) { return listIsToday() && c.due_day <= list.anki_today; }
+  // Fallback when today's list never arrived (the laptop was asleep or unplugged): from the
+  // previous day's list, play only reviews due today. Anki shows every due review up to the
+  // review limit, so these are cards Anki shows today too. Left out, to be safe: new and learning
+  // cards (which ones Anki picks can change overnight), notes with two cards due (Anki buries
+  // one), and anything past the deck's review limit. Older lists without limits play nothing.
+  const listIsYesterday = () => !!list && list.anki_today === ankiDay() - 1 && Array.isArray(list.review_limits);
+  let fallback = { key: null, ids: new Set() };
+  function fallbackIds() {
+    const day = ankiDay();
+    const key = `${list.made_at}:${day}`;
+    if (fallback.key === key) return fallback.ids;
+    const dueNow = list.cards.filter((c) => c.due_day <= day);
+    const perNote = {};
+    for (const c of dueNow) perNote[c.nid] = (perNote[c.nid] || 0) + 1;
+    for (const [nid, dueDay] of list.held_back || []) if (dueDay <= day) perNote[nid] = (perNote[nid] || 0) + 1;
+    const perBlock = {};
+    const ids = new Set();
+    for (const c of dueNow) {
+      if (c.kind !== 'review' || perNote[c.nid] > 1) continue;
+      perBlock[c.block] = (perBlock[c.block] || 0) + 1;
+      if (perBlock[c.block] <= (list.review_limits[c.block] ?? 0)) ids.add(c.cid);
+    }
+    fallback = { key, ids };
+    return ids;
+  }
+  function isDueToday(c) {
+    if (listIsToday()) return c.due_day <= list.anki_today;
+    return listIsYesterday() && fallbackIds().has(c.cid);
+  }
   function todaysCards() { return list ? list.cards.filter((c) => isDueToday(c) && !state.done[c.cid]) : []; }
 
   // ---------- Choosing the next card, the way Anki does ----------
@@ -312,7 +340,10 @@
     $('start').disabled = !list || ready === 0;
     if (list && !listIsToday()) {
       message("Today's list isn't here yet. Your laptop makes it at 4:30 am if it's on and plugged in, "
-        + 'or when you open or close Anki. Cards sent ahead are already downloaded.');
+        + 'or when you open or close Anki. '
+        + (listIsYesterday() && due.length
+          ? `Meanwhile you can play the ${due.length} reviews due today from last night's list; new and learning cards wait for today's list.`
+          : 'Cards sent ahead are already downloaded.'));
     }
   }
 

@@ -47,13 +47,16 @@ def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now:
     skipped: dict[str, int] = {}
     seen_cards: set[int] = set()
     note_days: dict[int, set[int]] = {}  # note id -> days that already have one of its cards
+    review_limits: list[int] = []
     last_day = today + days_ahead
     try:
         for block, name in enumerate(deck_names):
             did = col.decks.id_for_name(name)
             if not did:
                 skipped[f"deck not found: {name}"] = 1
+                review_limits.append(0)
                 continue
+            review_limits.append(_review_limit(col, did))
             block_start = len(cards)
             for card, kind, again, good, due_day in _block_cards(col, did, today, days_ahead):
                 if card.id in seen_cards:
@@ -89,6 +92,7 @@ def build_pack(col: Collection, deck_names: list[str], days_ahead: int = 1, now:
         "learn_ahead_secs": prefs.learn_ahead_secs,
         "voice": VOICE,
         "blocks": deck_names,
+        "review_limits": review_limits,  # per block, for the phone's fallback when no list of today arrives
         "cards": cards,
         "skipped": skipped,
     }
@@ -142,6 +146,21 @@ def _block_cards(col: Collection, did: int, today: int, days_ahead: int):
         card = col.get_card(cid)
         states = col._backend.get_scheduling_states(cid)
         yield card, "new", _secs(states.again), _secs(states.good), today + 1
+
+
+def _review_limit(col: Collection, did: int) -> int:
+    """The smallest daily review limit that can apply to a block: its deck's, its parents' and its
+    subdecks' (presets and deck-specific overrides). On the safe side: Anki never shows more."""
+    ids = set(col.decks.deck_and_child_ids(did)) | {d["id"] for d in col.decks.parents(did)}
+    limits = []
+    for deck_id in ids:
+        deck = col.decks.get(deck_id)
+        if not deck or deck.get("dyn"):
+            continue
+        limits.append(col.decks.config_dict_for_deck_id(deck_id)["rev"]["perDay"])
+        if deck.get("reviewLimit") is not None:
+            limits.append(deck["reviewLimit"])
+    return min(limits) if limits else 0
 
 
 def _order_block(entries: list[dict], conf: dict) -> list[dict]:

@@ -6,6 +6,10 @@ COPY of the collection with Anki's engine (the `anki` package, same version as y
 real collection is never touched. Anki writes `morning.json` (profile, collection path, decks)
 every time it sends a list, so the job always uses your current settings.
 
+Many laptops can't wake themselves for a scheduled task (wake timers off, Modern Standby). So when
+Anki closes on the charger in the evening, `helper overnight` also keeps the laptop awake until
+just after the task's time and sends the list itself if the task hasn't.
+
     python -m car_review.helper morning
     python -m car_review.helper schedule      # create or update the daily task
     python -m car_review.helper unschedule
