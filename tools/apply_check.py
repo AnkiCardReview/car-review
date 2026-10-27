@@ -130,6 +130,19 @@ def main() -> None:
         check("one Undo removes the car history", left == 0, f"{left} car reviews left")
         check("one Undo forgets the applied-grades record", plan_grades(col, [drive]).cards != [])
 
+        # A long drive: far more answers than Anki's 30 undo steps, still one Undo.
+        many = [c["cid"] for c in due_today[6:46]]
+        if len(many) >= 20:
+            long_drive = {"grades": [g(cid, 3 if i % 4 else 1, 30 + i) for i, cid in enumerate(many)]}
+            before_long = {cid: snapshot(col, cid) for cid in many}
+            long_report = apply_plan(col, plan_grades(col, [long_drive]))
+            check(f"long drive: all {len(many)} answers applied without errors",
+                  sum(long_report.applied.values()) == len(many) and not long_report.failures, str(long_report.failures[:2]))
+            col.undo()
+            check("long drive: one Undo restores every card", all(snapshot(col, cid) == before_long[cid] for cid in many))
+        else:
+            print(f"(long-drive check skipped: only {len(many)} more reviews due today)")
+
         # A realistic late case: a new card learned in the car yesterday, applied today.
         late = new[1]["cid"] if len(new) > 1 else late
         late_plan = plan_grades(col, [{"grades": [g(late, 3, 0, day=today - 1)]}])

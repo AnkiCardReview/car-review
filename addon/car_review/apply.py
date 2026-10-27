@@ -189,6 +189,9 @@ def apply_plan(col: Collection, plan: Plan, allow_late: bool = False) -> Report:
                 answer.milliseconds_taken = int(g.get("ms", 0))
                 expected_days = _state_days(answer.new_state)
                 col.sched.answer_card(answer)
+                # Anki keeps only the last 30 undo steps and every answer is one, so fold each
+                # answer into "Apply car grades" right away; otherwise a long drive pushes it out.
+                col.merge_undo_entries(undo_point)
                 ledger[_grade_key(g)] = int(g["at"])
                 report.applied["Good" if g["rating"] == 3 else "Again"] += 1
                 # Self-check: the card must now be where Anki said that button would put it.

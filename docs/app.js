@@ -72,15 +72,17 @@
 
   // ---------- Relay ----------
   let keys = null;
+  // A weak signal can leave a request hanging for minutes; give up and retry later instead.
+  const timeout = () => AbortSignal.timeout ? AbortSignal.timeout(20000) : undefined;
   async function relayGet(name) {
-    const r = await fetch(`${RELAY}/${keys.box}/${name}`, { cache: 'no-store' });
+    const r = await fetch(`${RELAY}/${keys.box}/${name}`, { cache: 'no-store', signal: timeout() });
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`relay said ${r.status}`);
     return decrypt(name, await r.arrayBuffer());
   }
   async function relayPut(name, bytes) {
     const r = await fetch(`${RELAY}/${keys.box}/${name}`, {
-      method: 'PUT', headers: { 'X-Write-Key': keys.write }, body: await encrypt(name, bytes),
+      method: 'PUT', headers: { 'X-Write-Key': keys.write }, body: await encrypt(name, bytes), signal: timeout(),
     });
     if (!r.ok) throw new Error(`relay said ${r.status}`);
   }
@@ -237,10 +239,14 @@
     clearTimeout(uploadTimer);
     uploadTimer = setTimeout(uploadGrades, 3000);
   }
+  let uploading = false;
   async function uploadGrades() {
-    if (!keys) return;
+    if (!keys || !state || uploading) return;
     const all = [...(state.carried || []), ...state.grades];
     if (!all.length || state.uploaded >= state.grades.length && !(state.carried || []).length) { showHome(); return; }
+    // No signal: grades stay on the phone, and go up when the 'online' event fires.
+    if (navigator.onLine === false) { showHome(); return; }
+    uploading = true;
     try {
       const body = enc.encode(JSON.stringify({ phone: state.phone, day: state.day, grades: all }));
       await relayPut(`grades/${state.day}-${state.phone}`, body);
@@ -250,6 +256,8 @@
     } catch (err) {
       log(`upload waiting for signal (${err.message})`);
       uploadTimer = setTimeout(uploadGrades, 30000);
+    } finally {
+      uploading = false;
     }
     showHome();
   }
@@ -257,6 +265,7 @@
   // ---------- Downloading the list and audio ----------
   async function refresh() {
     if (!keys) return;
+    loadSounds();
     message('Checking for a new list…');
     try {
       const raw = await relayGet('list');
@@ -380,20 +389,52 @@
   }
   async function playClip(name, then = null) {
     const blob = await DB.get('audio', name);
+    if (!blob) { log(`audio: clip missing on the phone (${name.slice(0, 8)})`); afterClip = then; clipDone(); return; }
     if (clipUrl) URL.revokeObjectURL(clipUrl);
     clipUrl = URL.createObjectURL(blob);
     afterClip = then;
     playSource(clipUrl, speed());
   }
+  // The Good/Again sounds are kept on the phone (they used to load from the internet each time,
+  // so in a tunnel the sound never played and the app waited for it forever).
+  const soundUrls = {};
+  async function loadSounds() {
+    for (const name of ['good', 'again']) {
+      if (soundUrls[name]) continue;
+      let blob = await DB.get('kv', `sound:${name}`);
+      if (!blob) {
+        try {
+          const r = await fetch(`sounds/${name}.mp3`, { signal: timeout() });
+          if (!r.ok) continue;
+          blob = await r.blob();
+          await DB.set('kv', `sound:${name}`, blob);
+        } catch { continue; }
+      }
+      soundUrls[name] = URL.createObjectURL(blob);
+    }
+  }
   function playSound(name, then) {
     afterClip = then;
-    playSource(`sounds/${name}.mp3`, 1);
+    playSource(soundUrls[name] || `sounds/${name}.mp3`, 1);
+    // Never wait on a sound: if it can't play, carry on after a moment anyway.
+    clearTimeout(soundGuard);
+    soundGuard = setTimeout(() => { if (afterClip === then) clipDone(); }, 4000);
   }
-  player.addEventListener('ended', () => {
-    if (player.loop) return;
+  let soundGuard = null;
+  function clipDone() {
+    clearTimeout(soundGuard);
     const next = afterClip;
     afterClip = null;
     if (next) next(); else playSilence();
+  }
+  player.addEventListener('ended', () => { if (!player.loop) clipDone(); });
+  // A clip that fails to load must not leave the app waiting.
+  player.addEventListener('error', () => { if (!player.loop) { log('audio: a clip failed to load, skipping it'); clipDone(); } });
+  // iOS can pause the audio (a call, Siri, a navigation prompt). While driving, start it again,
+  // or iOS hands the steering-wheel buttons to another app.
+  player.addEventListener('pause', () => {
+    if (!driving) return;
+    setTimeout(() => { if (driving && player.paused && !player.ended) player.play().catch(playFailed); }, 800);
   });
 
   // ---------- Driving ----------
@@ -455,11 +496,15 @@
       grade(3);
     } else if (stage === 'waiting' || stage === 'done') {
       goNext();
+    } else if (stage === 'feedback') {
+      afterClip = null;
+      goNext();
     }
   }
 
   function back() {
     if (stage === 'answer') { grade(1); return; }
+    if (stage === 'feedback') { afterClip = null; goNext(); return; }
     if (stage !== 'question') return;
     if (backTimer) {
       // Second press within half a second: skip this card as not audio friendly.
@@ -538,6 +583,7 @@
     audioReady = new Set(await DB.keys('audio'));
     await loadState();
     showHome();
+    loadSounds();
     refresh();
   }
 
@@ -566,7 +612,12 @@
     keys = null; list = null; state = null; audioReady = new Set();
     show('unpaired');
   });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !driving) refresh(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!driving) { refresh(); return; }
+    if (player.paused) player.play().catch(playFailed);
+  });
+  window.addEventListener('online', () => uploadSoon());
 
   // Lets a desktop browser simulate the buttons and the clock while testing.
   window.carReviewTest = {
