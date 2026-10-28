@@ -345,10 +345,10 @@ class SettingsDialog(QDialog):
             "Unplugging cancels it. Off: your phone gets a new list only when you close Anki, and on the "
             "next day it can play only that list's reviews, not new cards.</small>"))
         layout.addSpacing(10)
-        self.auto_apply = QCheckBox("Apply my car answers as soon as Anki opens, without asking first")
+        self.auto_apply = QCheckBox("Apply my car answers without asking first")
         self.auto_apply.setChecked(bool(self.config.get("auto_apply")))
         layout.addWidget(self.auto_apply)
-        layout.addWidget(text("<small>Off: Anki shows what your car answers will do and waits for you to click "
+        layout.addWidget(text("<small>Car answers are picked up when Anki opens and each time it syncs (the Sync button or Anki's own automatic sync). Off: Anki shows what your car answers will do and waits for you to click "
                               "Apply. On: they're applied straight away and a summary is shown. Either way Anki "
                               "makes a backup first, and Edit ▸ Undo reverts them in one step.</small>"))
         layout.addStretch(1)
@@ -510,7 +510,7 @@ class SettingsDialog(QDialog):
             "downloads the cards, then tap <b>Start</b>.</li>"
             "<li><b>In the car</b>: ⏭ next track = show the answer, then ⏭ again = Good. ⏮ previous "
             "track = Again (or repeat the question before the answer); ⏮⏮ quickly undoes your last answer.</li>"
-            "<li><b>When you open Anki</b> again, it shows your car answers"
+            "<li><b>When you open Anki</b> again (or sync it), it picks up your car answers"
             + (" and applies them." if self.auto_apply.isChecked() else " with an Apply button.") + "</li></ul>"
             f"Questions? <a href='{HELP_URL}'>Read the guide</a>.")
         self.prepare_button.setEnabled(bool(decks) and bool(self.engine))

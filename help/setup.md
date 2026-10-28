@@ -39,7 +39,7 @@ The first time, every top-level deck with cards due is ticked for you. That's a 
 The defaults suit most people:
 - **Also send cards due in the next 3 days**, so the phone still has cards if you don't open Anki for a day or two. Cards are only ever played on the day they're due.
 - **Make new audio by itself when I close Anki while plugged in** (on). Leave this on.
-- **Apply my car answers as soon as Anki opens, without asking first** (off). While it's off, Anki shows you what your car answers will do and waits for you to click **Apply**.
+- **Apply my car answers without asking first** (off). Car answers are picked up when Anki opens and each time it syncs (the Sync button or automatic sync). While it's off, Anki shows you what your car answers will do and waits for you to click **Apply**.
 
 ### Voice
 Press **Set up the voice**. Car Review downloads its own voice, about **340 MB**, into a folder called `CarReview` in your home folder:

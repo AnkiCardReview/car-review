@@ -43,7 +43,11 @@ class Voice:
         self.engine = available_engine()
         self._speak = None
 
-    def _load(self) -> None:
+    @property
+    def loaded(self) -> bool:
+        return self._speak is not None
+
+    def load(self) -> None:
         if self.engine == "onnx":
             self._speak = _onnx_engine()
         elif self.engine == "torch":
@@ -56,7 +60,7 @@ class Voice:
         import numpy as np
 
         if self._speak is None:
-            self._load()
+            self.load()
         chunks = self._speak(text)
         return np.concatenate(chunks) if chunks else np.zeros(RATE // 10, dtype=np.float32)
 

@@ -32,7 +32,7 @@ import requests
 from .common import CACHE, HOME, INBOX, PACK, PAIRING, RELAY, STATUS, load_pairing, pairing_link
 from .pairing import Pairing
 from .power import on_charger
-from .ui import Progress, run_with_window
+from .ui import Progress, Stopped, run_with_window
 from .voice import Voice, available_engine
 
 BATCH = 25
@@ -91,11 +91,32 @@ def wait_for_charger(progress: Progress | None = None, **status) -> None:
     write_status(state="paused (on battery)", **status)
     if progress:
         progress.note = "Paused: the laptop is on battery. Plug it in to continue."
+        progress.event("On battery: paused until you plug in.", "warn")
     while not on_charger() and not (progress and progress.stopped):
-        time.sleep(5)
+        time.sleep(1)
     if progress:
         progress.note = ""
+        if not progress.stopped:
+            progress.event("Plugged in: carrying on.")
     keep_awake(True)
+
+
+def make_clip(voice: Voice, text: str, progress: Progress) -> bytes:
+    """One clip as mp3, loading the voice first if needed. Raises Stopped as soon as Stop is
+    pressed, without waiting for the clip (or the voice) to finish."""
+    if not voice.loaded:
+        progress.phase = "Loading the voice…"
+        progress.event("Loading the voice (on a slow laptop this takes about a minute).", "quiet")
+        started = time.time()
+        progress.run(voice.load)
+        progress.phase = ""
+        progress.event(f"Voice ready ({voice.engine} engine, {time.time() - started:.0f} s).")
+    return progress.run(voice.mp3, text)
+
+
+def snippet(text: str, n: int = 48) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
 
 
 class Relay:
@@ -149,8 +170,9 @@ class Outbox:
     clips are stored, so a bundle still in the mailbox is one the phone hasn't fetched yet. If the
     phone loses its audio, "have" shrinks and the missing clips are simply sent again."""
 
-    def __init__(self, relay: Relay) -> None:
+    def __init__(self, relay: Relay, progress: Progress | None = None) -> None:
         self.relay = relay
+        self.progress = progress
         try:
             data = relay.get("have")
             self.have = set(read_json(data)["clips"]) if data else set()
@@ -189,8 +211,12 @@ class Outbox:
         self.relay.put(name, pack_bundle(self.pending))
         self.bundles[name] = [n for n, _ in self.pending]
         self.coming |= self.pending_names
-        self.pending, self.pending_names, self.size = [], set(), 0
         self.uploads += 1
+        if self.progress:
+            self.progress.stats["uploads"] = self.uploads
+            self.progress.event(f"Uploaded {len(self.pending):,} clips in one file ({self.size / 1e6:.1f} MB).",
+                                to_log=False)
+        self.pending, self.pending_names, self.size = [], set(), 0
         self._save()
 
     def _save(self) -> None:
@@ -391,7 +417,12 @@ def send(pack_path: Path, progress: Progress) -> None:
     made = 0
     voicing = False
     try:
-        outbox = Outbox(relay)
+        progress.phase = "Checking what your phone already has…"
+        outbox = Outbox(relay, progress)
+        progress.phase = ""
+        progress.event(f"Your phone has {len(outbox.have):,} clips"
+                       + (f"; {len(outbox.bundles):,} audio files are waiting for it in the mailbox." if outbox.bundles
+                          else "."), to_log=False)
         names: dict[str, str] = {}
 
         def relay_name(fp: str) -> str:
@@ -402,6 +433,9 @@ def send(pack_path: Path, progress: Progress) -> None:
         def put_list(pack: dict, ready: list[dict], **counts) -> None:
             outbox.flush()  # the list only names clips the phone can already get
             relay.put("list", phone_list(pack, ready, pairing, bundles=sorted(outbox.bundles), **counts))
+            progress.stats["ready"] = len(ready)
+            progress.event(f"Phone list updated: {len(ready):,} of {len(pack['cards']):,} cards ready.",
+                           "ok", to_log=False)
 
         while True:
             loaded_at = pack_path.stat().st_mtime
@@ -414,9 +448,13 @@ def send(pack_path: Path, progress: Progress) -> None:
             # The few spoken cues first: made when voicing, sent whenever they're ready.
             for cue in announce_clips(pack):
                 path = CACHE / f"{cue['audio']}.mp3"
-                if not path.exists() and voicing and on_charger():
-                    path.write_bytes(voice.mp3(cue["text"]))
+                if not path.exists() and voicing and on_charger() and not progress.stopped:
+                    try:
+                        path.write_bytes(make_clip(voice, cue["text"], progress))
+                    except Stopped:
+                        continue
                     made += 1
+                    progress.stats["made"] = made
                 if path.exists():
                     keep_fresh(path)
                     outbox.add(relay_name(cue["audio"]), path)
@@ -444,6 +482,11 @@ def send(pack_path: Path, progress: Progress) -> None:
             progress.unit = "cards needing audio" if to_voice else "cards to upload"
             work_total, work_done = len(to_voice) or len(order), 0
             progress.step(0, work_total)
+            if progress.stats["ready"] is None:
+                progress.stats["ready"] = len(ready_idx)
+            progress.event(f"{len(cards):,} cards in the list: {len(ready_idx):,} already on the phone"
+                           + (f", {len(to_voice):,} need audio" if to_voice else "")
+                           + (f", {len(to_upload):,} to upload" if to_upload else "") + ".")
             if to_voice and ready_idx:
                 # Voicing takes a while: the phone gets this list's ready cards straight away.
                 ready = [cards[j] for j in sorted(ready_idx)]
@@ -456,18 +499,27 @@ def send(pack_path: Path, progress: Progress) -> None:
                     break  # stopped by the user: the phone keeps every card that's ready
                 if pack_path.stat().st_mtime != loaded_at:
                     newer = True
+                    progress.event("Anki saved a newer list; switching to it (audio made so far is kept).")
                     break
-                for fp, text in clips(cards[i]):
-                    path = CACHE / f"{fp}.mp3"
-                    if not path.exists():
-                        wait_for_charger(progress, ready=len(ready_idx), total=len(cards), made=made)
-                        if progress.stopped:
-                            break
-                        path.write_bytes(voice.mp3(text))
-                        made += 1
-                    outbox.add(relay_name(fp), path)
-                else:
-                    ready_idx.add(i)
+                card_started, card_made = time.time(), 0
+                try:
+                    for fp, text in clips(cards[i]):
+                        path = CACHE / f"{fp}.mp3"
+                        if not path.exists():
+                            wait_for_charger(progress, ready=len(ready_idx), total=len(cards), made=made)
+                            if progress.stopped:
+                                raise Stopped
+                            path.write_bytes(make_clip(voice, text, progress))
+                            made += 1
+                            card_made += 1
+                            progress.stats["made"] = made
+                        outbox.add(relay_name(fp), path)
+                except Stopped:
+                    break  # the clip being made is dropped; the phone keeps every card that's ready
+                ready_idx.add(i)
+                if card_made:
+                    progress.event(f"Audio made: “{snippet(cards[i]['question'])}” "
+                                   f"({time.time() - card_started:.0f} s)", "quiet", to_log=False)
                 if i not in to_voice and to_voice:
                     continue
                 work_done += 1
@@ -498,7 +550,7 @@ def send(pack_path: Path, progress: Progress) -> None:
         progress.finish(message + (" Stopped early." if progress.stopped else " Done ✓"))
     except Exception as err:
         write_status(state="error", error=str(err), detail=traceback.format_exc()[-2000:])
-        progress.finish(f"Stopped by an error: {err}")
+        progress.finish(f"Stopped by an error: {err}", failed=True)
         raise
     finally:
         keep_awake(False)
@@ -527,12 +579,20 @@ def prepare(pack_path: Path, progress: Progress) -> None:
     progress.unit = "clips"
     made = 0
     try:
+        progress.event(f"{len(cards):,} cards in the list; {total:,} clips still need audio.")
         for fp, text in todo.items():
             if not progress.checkpoint():
                 break
             wait_for_charger(progress, made=made, total=total)
-            (CACHE / f"{fp}.mp3").write_bytes(voice.mp3(text))
+            clip_started = time.time()
+            try:
+                (CACHE / f"{fp}.mp3").write_bytes(make_clip(voice, text, progress))
+            except Stopped:
+                break  # the clip being made is dropped; the ones before it are kept
             made += 1
+            progress.stats["made"] = made
+            progress.event(f"Audio made: “{snippet(text)}” ({time.time() - clip_started:.0f} s)", "quiet",
+                           to_log=False)
             progress.step(made, total)
             if made % 20 == 0:
                 write_status(state="preparing audio ahead", made=made, total=total, cards=len(cards),
@@ -542,7 +602,7 @@ def prepare(pack_path: Path, progress: Progress) -> None:
         progress.finish(f"{made:,} of {total:,} clips made." + (" Stopped early; it carries on next time." if progress.stopped else " Done ✓"))
     except Exception as err:
         write_status(state="error", error=str(err), detail=traceback.format_exc()[-2000:])
-        progress.finish(f"Stopped by an error: {err}")
+        progress.finish(f"Stopped by an error: {err}", failed=True)
         raise
     finally:
         keep_awake(False)
@@ -602,6 +662,10 @@ def main() -> None:
             work(progress)
         else:
             run_with_window(progress, work)
+        # A clip given up on by Stop may still be running on a side thread: don't wait for it.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     elif args.cmd == "status":
         print(STATUS.read_text() if STATUS.exists() else "{}")
     elif args.cmd == "link":
