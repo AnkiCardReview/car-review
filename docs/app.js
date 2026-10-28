@@ -11,7 +11,7 @@
   // A local test relay can be set on a localhost page only (tools: wrangler dev).
   const RELAY = (location.hostname === 'localhost' && localStorage.getItem('relayUrl'))
     || 'https://car-review-relay.ankicardreview.workers.dev/v1';
-  const APP_VERSION = 12; // also in index.html (app.js?v=); sent with grades so problems can be traced
+  const APP_VERSION = 13; // also in index.html (app.js?v=); sent with grades so problems can be traced
   const AUDIO_CAP = 400e6;     // bytes of audio kept on the phone; the oldest-used clips go first
   const AUDIO_KEEP_DAYS = 60;  // clips no list has used for this long are removed
   const $ = (id) => document.getElementById(id);
@@ -149,7 +149,7 @@
     return secs < list.next_day_at ? list.anki_today : list.anki_today + 1 + Math.floor((secs - list.next_day_at) / 86400);
   }
   function freshState(day) {
-    return { day, done: {}, learning: {}, grades: [], uploaded: 0, phone: state?.phone || crypto.randomUUID().slice(0, 8) };
+    return { day, done: {}, learning: {}, grades: [], sessions: [], uploaded: 0, phone: state?.phone || crypto.randomUUID().slice(0, 8) };
   }
   async function loadState() {
     // Two copies: IndexedDB and localStorage. Use the one that's further along.
@@ -162,6 +162,7 @@
     if (state.day !== ankiDay()) {
       // A new Anki day: keep grades that still need uploading, start fresh otherwise.
       const pending = state.grades.slice(state.uploaded);
+      saveDay(state); // its totals stay in "Past days"
       state = { ...freshState(ankiDay()), carried: pending };
     }
   }
@@ -223,6 +224,8 @@
     // deck's turn; cards you missed in the car come back when due, whichever deck is playing.
     const firstOther = cards.find((c) => learningDue(c) === null);
     const currentBlock = firstOther ? firstOther.block : Infinity;
+    // As in Anki: learning cards due now come first, then the rest of the queue, and only when
+    // nothing else is left, learning cards due within the learn-ahead limit.
     let soonest = null;
     let learning = null;
     let other = null;
@@ -236,8 +239,9 @@
         other = c; // list order = Anki's order, one deck block after another
       }
     }
-    if (learning) return { card: learning };
+    if (learning && learningDue(learning) <= t) return { card: learning };
     if (other) return { card: other };
+    if (learning) return { card: learning };
     if (soonest !== null) return { waitUntil: soonest };
     return {};
   }
@@ -293,8 +297,9 @@
       state.done[card.cid] = true;
     }
     state.grades.push({ cid: card.cid, rating, at: t, ms: Math.min(60000, t - shownAt), day: state.day, list: list.made_at });
-    if (driving && lastDrive) { lastDrive.end = t; saveLastDrive(); }
+    if (driving && session) session.end = t;
     saveState();
+    saveDay();
     log(`${rating === 1 ? 'Again' : rating === 3 ? 'Good' : 'Skip'} ${card.cid}${delay ? ` (back in ${Math.round(delay / 60)} min)` : ''}`);
   }
 
@@ -553,11 +558,10 @@
     $('h-due').textContent = list ? String(due.length) : '–';
     $('h-ready').innerHTML = list ? (ready === due.length ? `<span class="ok">✓ ${ready}</span>` : `<span class="warn">${ready} of ${due.length}</span>`) : '–';
     $('h-made').textContent = list ? new Date(list.made_at * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '–';
-    $('h-done').textContent = state ? String(Object.keys(state.done).length) : '–';
     const total = state ? state.grades.length : 0;
     $('h-up').innerHTML = !state || !total ? '–' : state.uploaded >= total ? '<span class="ok">✓ all</span>' : `<span class="warn">${total - state.uploaded} waiting</span>`;
     $('start').disabled = !list || ready === 0;
-    showLastDrive();
+    renderToday();
     renderSync();
     $('h-storage').textContent = audioReady.size ? `${Math.round(audioBytes() / 1e6)} MB (${audioReady.size} clips)` : 'none';
     if (list && !listIsToday()) {
@@ -569,61 +573,97 @@
     }
   }
 
-  // ---------- Last drive ----------
-  // A summary of the latest drive on the home screen, worked out from today's answers, so it's
-  // there whether or not Stop was pressed. Answers undone in the car don't count.
-  let lastDrive = (() => { try { return JSON.parse(localStorage.getItem('lastDrive') || 'null'); } catch { return null; } })();
-  function saveLastDrive() {
-    try { localStorage.setItem('lastDrive', JSON.stringify(lastDrive)); } catch { /* only a summary */ }
+  // ---------- Today's stats ----------
+  // Every Start..Stop is a session (in the car or on screen). The "Today" panel adds up today's
+  // sessions from the answers themselves, so it's right whether or not Stop was pressed, and
+  // answers undone with ⏮⏮ don't count. Each day's totals stay on this phone for "Past days"
+  // (they are never uploaded; Anki has its own Car stats).
+  let session = null;
+  const DAYS_KEPT = 30;
+  const pastDays = (() => { try { return JSON.parse(localStorage.getItem('days') || '{}'); } catch { return {}; } })();
+  function todaysSessions(s = state) {
+    if (!s) return [];
+    const recorded = (s.sessions || []).map((x) => ({ ...x, grades: [] }));
+    const loose = [];
+    for (const g of s.grades) {
+      if (!(g.rating > 0)) continue;
+      const into = recorded.find((x) => g.at >= x.start && g.at <= x.end);
+      if (into) into.grades.push(g); else loose.push(g);
+    }
+    // Answers from before sessions were kept (app 12): a 10-minute gap starts a new session.
+    const out = recorded.filter((x) => x.grades.length);
+    let group = null;
+    for (const g of loose) {
+      if (!group || g.at - group.end > 600000) { group = { start: g.at - (g.ms || 0), end: g.at, grades: [] }; out.push(group); }
+      group.grades.push(g);
+      group.end = g.at;
+    }
+    return out.sort((a, b) => a.start - b.start);
   }
-  function driveSummary() {
-    if (!lastDrive || !state || !list || lastDrive.day !== state.day) return null;
-    const grades = state.grades.filter((g) => g.rating > 0 && g.at >= lastDrive.start && g.at <= lastDrive.end);
-    if (!grades.length) return null;
-    const byId = new Map(list.cards.map((c) => [c.cid, c]));
+  function dayStats(s = state) {
+    const sessions = todaysSessions(s);
+    const byId = new Map(list ? list.cards.map((c) => [c.cid, c]) : []);
     const seen = new Set();
-    const decks = new Map(); // deck -> [right, reviews]
-    let learning = 0, again = 0;
-    for (const g of grades) {
-      const c = byId.get(g.cid);
-      if (g.rating === 1) again += 1;
-      const first = !seen.has(g.cid);
-      seen.add(g.cid);
-      if (c && c.kind === 'review' && first) {
+    const decks = new Map(); // deck -> [right, reviews], first answer of the day only
+    let answers = 0, again = 0, right = 0, reviews = 0, ms = 0;
+    for (const x of sessions) {
+      ms += Math.max(0, x.end - x.start);
+      for (const g of x.grades) {
+        answers += 1;
+        if (g.rating === 1) again += 1;
+        const first = !seen.has(g.cid);
+        seen.add(g.cid);
+        const c = byId.get(g.cid);
+        if (!first || !c || c.kind !== 'review') continue;
         const deck = c.deck.split('::')[0];
         const d = decks.get(deck) || [0, 0];
         d[0] += g.rating > 1 ? 1 : 0;
         d[1] += 1;
         decks.set(deck, d);
-      } else learning += 1;
+        reviews += 1;
+        right += g.rating > 1 ? 1 : 0;
+      }
     }
-    const mins = Math.max(1, Math.round((grades[grades.length - 1].at - lastDrive.start) / 60000));
-    const timing = (state.timing || []).filter((e) => e.at >= lastDrive.start && e.at <= lastDrive.end + 60000);
-    const lags = timing.filter((e) => e.via && e.via !== 't' && e.lag >= 0 && !(e.via === 'b' && e.k === 'q')).map((e) => e.lag).sort((x, y) => x - y);
-    return {
-      when: new Date(lastDrive.start).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }),
-      mins, answers: grades.length, cards: seen.size, again, learning, decks: [...decks],
-      perCard: Math.round((grades[grades.length - 1].at - lastDrive.start) / 1000 / grades.length),
-      auto: timing.filter((e) => e.k === 'a' && e.via === 't').length,
-      lag: lags.length ? lags[Math.floor(lags.length / 2)] : null,
-    };
+    return { sessions, answers, again, right, reviews, cards: seen.size, ms, mins: Math.round(ms / 60000), decks: [...decks] };
   }
-  function showLastDrive() {
-    const s = driveSummary();
-    $('last-drive').classList.toggle('hidden', !s);
+  // Keep a day's totals for "Past days" (after every answer, and before a new day replaces them).
+  function saveDay(s = state) {
     if (!s) return;
-    const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : '–');
-    const rows = [
-      ['When', `${s.when} · ${s.mins} min`],
-      ['Answers', `${s.answers} on ${s.cards} cards (${s.again} Again)`],
-      ...s.decks.map(([deck, [right, n]]) => [`${deck} reviews right`, `${pct(right, n)} (${right} of ${n})`]),
-      ['Learning-card answers', String(s.learning)],
-      ['Time per answer', `${s.perCard} s`],
-    ];
-    if (s.auto) rows.push(['Answers played by themselves', String(s.auto)]);
-    if (s.lag !== null) rows.push(['Sound after a press', `${s.lag} ms`]);
-    const esc = (t) => t.replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
-    $('ld-body').innerHTML = rows.map(([k, v]) => `<div class="stat"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+    const d = dayStats(s);
+    if (!d.answers) { delete pastDays[s.day]; } else {
+      pastDays[s.day] = { at: d.sessions[0].start, cards: d.cards, answers: d.answers, mins: d.mins, right: d.right, reviews: d.reviews };
+    }
+    for (const day of Object.keys(pastDays).map(Number).sort((a, b) => b - a).slice(DAYS_KEPT)) delete pastDays[day];
+    try { localStorage.setItem('days', JSON.stringify(pastDays)); } catch { /* only a summary */ }
+  }
+  const esc = (t) => String(t).replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
+  const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : '–');
+  const minutes = (ms) => (ms > 0 && ms < 30000 ? '<1' : String(Math.round(ms / 60000)));
+  const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  function renderToday() {
+    const d = dayStats();
+    $('t-cards').textContent = String(d.cards);
+    $('t-mins').textContent = minutes(d.ms);
+    $('t-right').textContent = pct(d.right, d.reviews);
+    const rows = d.answers ? [
+      ['Answers', `${d.answers} (${d.again} Again)`],
+      ...d.decks.map(([deck, [r, n]]) => [`${deck}: reviews right`, `${pct(r, n)} (${r} of ${n})`]),
+      ['Time per answer', `${Math.round(d.ms / 1000 / d.answers)} s`],
+    ] : [];
+    $('t-body').innerHTML = rows.map(([k, v]) => `<div class="stat"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')
+      || '<p>No reviews yet today.</p>';
+    $('t-sessions').innerHTML = d.sessions.map((x) => {
+      const how = x.buttons === undefined ? '' : x.buttons >= x.screen ? ' · hands-free' : ' · on screen';
+      return `<div class="session"><span>${esc(clock(x.start))}</span><b>${minutes(x.end - x.start)} min · ${x.grades.length} answers${how}</b></div>`;
+    }).join('');
+    $('t-sessions-head').classList.toggle('hidden', !d.sessions.length);
+    const older = Object.entries(pastDays).map(([day, v]) => [Number(day), v])
+      .filter(([day]) => !state || day < state.day).sort((a, b) => b[0] - a[0]).slice(0, 7);
+    $('t-days').innerHTML = older.map(([, v]) => {
+      const date = new Date(v.at).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+      return `<div class="session"><span>${esc(date)}</span><b>${v.cards} cards · ${v.mins} min · ${pct(v.right, v.reviews)} right</b></div>`;
+    }).join('');
+    $('t-days-head').classList.toggle('hidden', !older.length);
   }
 
   // ---------- Audio player ----------
@@ -787,19 +827,35 @@
   let shownAt = 0;
   let waitTimer = null;
   let backTimer = null;
-  let backPresses = 0;
   let playedThisDrive = 0;
   let lastBlock = null; // the furthest deck reached this drive, for the "<deck> done" cue
 
+  // The two big buttons on the screen do what their label says (no double taps needed there).
+  const CONTROLS = {
+    question: ['Hear again', 'Show answer', 'q'],
+    answer: ['Again', 'Good', 'a'],
+    waiting: ['Previous card', 'Check now', 'w'],
+    done: ['Previous card', 'All done', 'w'],
+    idle: ['Back', 'Forward', 'w'],
+  };
   function setScreen(text, extra = '') {
     $('d-stage').textContent = text;
     $('d-count').textContent = extra;
+    const [left, right, cls] = CONTROLS[stage] || CONTROLS.idle;
+    $('d-back-label').textContent = left;
+    $('d-fwd-label').textContent = right;
+    $('d-controls').className = `row controls stage-${cls}`;
+    $('d-fwd').disabled = stage === 'done' || stage === 'idle';
+    $('d-skip').disabled = stage !== 'question';
+    $('d-prev').disabled = !history.length;
+    const remaining = todaysCards().filter(cardReady).length;
+    $('d-bar').style.width = `${Math.round((100 * playedThisDrive) / Math.max(1, playedThisDrive + remaining))}%`;
     const title = current ? `${text} · ${current.deck}` : text;
     if (navigator.mediaSession) navigator.mediaSession.metadata = new MediaMetadata({ title, artist: 'Car Review' });
   }
   function counts() {
     const left = todaysCards().filter(cardReady).length;
-    return `${playedThisDrive} done this drive · ${left} left`;
+    return `${playedThisDrive} done this session · ${left} left`;
   }
   const cue = (which) => (list.announce && audioReady.has(which.audio) ? which.audio : null);
 
@@ -813,7 +869,7 @@
       revealTimer = setTimeout(() => {
         if (!driving || current !== card || stage !== 'question') return;
         markPress('t');
-        reveal('Answer (played by itself) · ⏭ Good  ⏮ Again');
+        reveal('Answer (played by itself)');
       }, answerSecs() * 1000);
     });
   }
@@ -858,7 +914,7 @@
     }
   }
 
-  function reveal(screen = 'Answer · ⏭ Good  ⏮ Again') {
+  function reveal(screen = 'Answer') {
     stage = 'answer';
     setScreen(screen, counts());
     if ($('show-text').checked) $('card-text').textContent = `${current.question}\n\n→ ${current.answer}`;
@@ -876,41 +932,62 @@
     }
   }
 
-  // ⏮ on a question: once = repeat it, twice quickly = undo the last answer, three times = skip
-  // the card as not audio-friendly. Presses are counted for 0.6 s after the last one.
+  // ⏮ on a question: once = hear it again (straight away), twice = go back to the card before,
+  // from its question (⏭ then plays its answer), three times = skip this card as not
+  // audio-friendly. Car buttons can reach the phone a beat late, so the second press counts for
+  // BACK_WINDOW ms after the first, and going back waits BACK_CONFIRM ms for a third.
+  // After the last card (or while waiting for one), a single ⏮ goes back a card.
+  const BACK_WINDOW = 1200;
+  const BACK_CONFIRM = 900;
+  let backRun = { n: 0, at: 0, card: null };
   function back() {
     markPress('b');
-    if (stage === 'answer') { grade(1); return; }
-    if (stage !== 'question' && stage !== 'waiting' && stage !== 'done') return;
-    backPresses += 1;
     clearTimeout(backTimer);
-    if (backPresses >= 3) { backPresses = 0; backAction(3); return; }
-    backTimer = setTimeout(() => { const n = backPresses; backPresses = 0; backAction(n); }, 600);
-  }
-  function backAction(presses) {
-    if (presses === 2) { undo(); return; }
+    if (stage === 'answer') { backRun.n = 0; grade(1); return; }
+    if (stage === 'waiting' || stage === 'done') { backRun.n = 0; previousCard(); return; }
     if (stage !== 'question') return;
-    if (presses === 3) {
-      skip(current);
-      setScreen('Skipped (not audio-friendly)', counts());
-      goNext();
+    const t = performance.now();
+    const more = backRun.n > 0 && backRun.card === current && t - backRun.at < (backRun.n === 1 ? BACK_WINDOW : BACK_CONFIRM);
+    backRun = { n: more ? backRun.n + 1 : 1, at: t, card: current };
+    if (backRun.n === 1) { repeatQuestion(); return; }
+    if (backRun.n === 2) {
+      playSilence();
+      setScreen('Going back a card…', counts());
+      backTimer = setTimeout(() => { backRun.n = 0; previousCard(); }, BACK_CONFIRM);
       return;
     }
-    shownAt = now();
-    playQuestion(current); // repeat the question
+    backRun.n = 0;
+    skipCurrent();
   }
-  function undo() {
+  function repeatQuestion() {
+    if (stage !== 'question') return;
+    shownAt = now();
+    setScreen('Question', counts());
+    playQuestion(current);
+  }
+  // Undo the last answer of this session and play that card again from its question.
+  function previousCard() {
+    clearTimeout(backTimer);
     const card = undoLast();
-    if (!card) { if (stage === 'question') playQuestion(current); return; }
+    if (!card) {
+      if (stage === 'question') { setScreen('No earlier card this session', counts()); playQuestion(current); }
+      return;
+    }
     playedThisDrive = Math.max(0, playedThisDrive - 1);
     clearTimeout(waitTimer);
     current = card;
-    stage = 'answer';
+    stage = 'question';
     shownAt = now();
     $('d-deck').textContent = current.deck;
-    if ($('show-text').checked) $('card-text').textContent = `${current.question}\n\n→ ${current.answer}`;
-    setScreen('Undone · ⏭ Good  ⏮ Again', counts());
-    playClip(current.a_audio);
+    $('card-text').textContent = $('show-text').checked ? current.question : '';
+    setScreen('Back one card · ⏭ answer', counts());
+    saveDay();
+    playQuestion(current);
+  }
+  function skipCurrent() {
+    if (stage !== 'question' || !current) return;
+    skip(current);
+    goNext();
   }
 
   function grade(rating) {
@@ -920,19 +997,39 @@
     goNext(); // straight on to the next question: no sound in between
   }
 
+  // Keeps the screen from locking during a session when that setting is on (for reviewing on
+  // screen, e.g. walking). The browser lets go of it whenever the app is hidden.
+  let wakeLock = null;
+  async function keepScreenOn(on) {
+    try {
+      if (on && $('keep-awake').checked && navigator.wakeLock && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      } else if (!on && wakeLock) {
+        await wakeLock.release();
+        wakeLock = null;
+      }
+    } catch (err) { log(`screen can't stay on: ${err.message}`); }
+  }
+  const pressed = (kind, fn) => () => { if (session) session[kind] += 1; fn(); };
+
   async function startDrive() {
     driving = true;
     driveStartedAt = now();
-    lastDrive = { start: driveStartedAt, end: driveStartedAt, day: state.day };
-    saveLastDrive();
+    session = { start: driveStartedAt, end: driveStartedAt, buttons: 0, screen: 0 };
+    state.sessions = state.sessions || [];
+    state.sessions.push(session);
+    saveState();
     pressT = null; prevEnd = null; lastRec = null;
     playedThisDrive = 0;
     lastBlock = null;
     history.length = 0;
+    backRun.n = 0;
     playSilence(); // must start from the Start tap: iOS only allows audio after a tap
+    keepScreenOn(true);
     if (navigator.mediaSession) {
-      navigator.mediaSession.setActionHandler('nexttrack', forward);
-      navigator.mediaSession.setActionHandler('previoustrack', back);
+      navigator.mediaSession.setActionHandler('nexttrack', pressed('buttons', forward));
+      navigator.mediaSession.setActionHandler('previoustrack', pressed('buttons', back));
       // Play/pause from a lock screen or headset: keep playing so the buttons stay connected.
       navigator.mediaSession.setActionHandler('play', () => player.paused && playSilence());
       navigator.mediaSession.setActionHandler('pause', () => setTimeout(() => player.paused && playSilence(), 300));
@@ -952,9 +1049,12 @@
     if (driving && playedThisDrive) log(timingSummary());
     driving = false;
     stage = 'idle';
+    session = null;
     clearTimeout(waitTimer);
+    clearTimeout(backTimer);
     clearInterval(heartbeat);
     clearTimeout(revealTimer);
+    keepScreenOn(false);
     player.pause();
     memory.clear();
     show('home');
@@ -970,6 +1070,7 @@
     $('show-text').checked = localStorage.getItem('showText') === '1';
     $('auto-answer').checked = localStorage.getItem('autoAnswer') === '1';
     $('answer-secs').value = localStorage.getItem('answerSecs') || '8';
+    $('keep-awake').checked = localStorage.getItem('keepAwake') === '1';
 
     // Pairing link from the add-on's QR code: #pair=<secret> (never sent to any server).
     // A Home Screen app on iPhone gets its own storage, separate from Safari's, so in Safari the
@@ -1019,9 +1120,22 @@
   });
   $('intro-done').addEventListener('click', () => { localStorage.setItem('introDone', '1'); showHome(); window.scrollTo(0, 0); });
   $('show-intro').addEventListener('click', () => { localStorage.removeItem('introDone'); showHome(); window.scrollTo(0, 0); });
-  $('d-fwd').addEventListener('click', forward);
-  $('d-back').addEventListener('click', back);
+  $('d-fwd').addEventListener('click', pressed('screen', forward));
+  // On the screen, the left button does what it says: hear the question again, Again, or go back.
+  $('d-back').addEventListener('click', pressed('screen', () => {
+    if (stage === 'question') { markPress('b'); clearTimeout(backTimer); backRun.n = 0; repeatQuestion(); } else back();
+  }));
+  $('d-prev').addEventListener('click', pressed('screen', () => { markPress('b'); previousCard(); }));
+  $('d-skip').addEventListener('click', pressed('screen', () => {
+    if (stage !== 'question' || !confirm("Skip this card in the car from now on? (It doesn't work as audio.) It stays due in Anki as normal.")) return;
+    markPress('b');
+    skipCurrent();
+  }));
   $('d-stop').addEventListener('click', stopDrive);
+  $('keep-awake').addEventListener('change', () => {
+    localStorage.setItem('keepAwake', $('keep-awake').checked ? '1' : '0');
+    if (driving) keepScreenOn($('keep-awake').checked);
+  });
   $('speed').addEventListener('input', () => {
     $('speed-val').textContent = Number($('speed').value).toFixed(1);
     localStorage.setItem('speed', $('speed').value);
@@ -1050,13 +1164,14 @@
     if (document.visibilityState !== 'visible') return;
     if (!driving) { syncIfNeeded('opened'); return; }
     if (player.paused) player.play().catch(playFailed);
+    keepScreenOn(true);
   });
   window.addEventListener('online', () => { offline = false; if (gradesWaiting() && !driving) uploadGrades(); else renderSync(); });
 
   // Lets a desktop browser simulate the buttons and the clock while testing.
   window.carReviewTest = {
-    forward, back, undo, next: () => goNext(), advance: (ms) => { clockOffset += ms; },
-    timingSummary, driveSummary, get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
+    forward, back, previousCard, next: () => goNext(), advance: (ms) => { clockOffset += ms; },
+    timingSummary, dayStats, get stage() { return stage; }, get current() { return current; }, get state() { return state; }, get list() { return list; },
   };
 
   init().catch((err) => { log(`startup error: ${err.message}`); show('home'); });

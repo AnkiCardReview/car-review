@@ -509,7 +509,7 @@ class SettingsDialog(QDialog):
             "<li><b>Before you drive</b>, open Car Review on your phone (on Wi-Fi if you can) so it "
             "downloads the cards, then tap <b>Start</b>.</li>"
             "<li><b>In the car</b>: ⏭ next track = show the answer, then ⏭ again = Good. ⏮ previous "
-            "track = Again (or repeat the question before the answer); ⏮⏮ quickly undoes your last answer.</li>"
+            "track = Again (or repeat the question before the answer); ⏮⏮ goes back a card.</li>"
             "<li><b>When you open Anki</b> again (or sync it), it picks up your car answers"
             + (" and applies them." if self.auto_apply.isChecked() else " with an Apply button.") + "</li></ul>"
             f"Questions? <a href='{HELP_URL}'>Read the guide</a>.")

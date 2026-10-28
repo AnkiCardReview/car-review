@@ -81,11 +81,12 @@ Press **Finish**.
 | You hear | ⏭ next track | ⏮ previous track |
 |---|---|---|
 | A question (or silence after it) | Hear the answer | Repeat the question |
-| A question, pressed twice quickly | | Undo the last answer (you hear its answer again and grade it again) |
-| A question, pressed three times quickly | | Skip: "doesn't work as audio" |
+| A question, pressed twice | | Go back a card: undo its answer and hear its question again (⏭ then plays its answer) |
+| A question, pressed three times | | Skip: "doesn't work as audio" |
+| "All done" or waiting for a learning card | | Go back a card |
 | The answer | **Good** (the next question starts) | **Again** (the next question starts) |
 
-Nothing plays on its own: after a question, it waits silently as long as you like. Cards you answer **Again** come back after your learning step, just as in Anki.
+The second ⏮ counts for a little over a second after the first, so a car that passes presses on a beat late still works. Nothing plays on its own: after a question, it waits silently as long as you like. Cards you answer **Again** come back after your learning step, just as in Anki.
 
 > **Safety:** set up and tap Start before you move. While driving, use only the steering-wheel buttons and never look at or touch the phone. If a card needs thought, let it wait.
 

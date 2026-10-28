@@ -32,7 +32,7 @@ Only cards waiting on a learning-step timer are left. Car Review follows Anki's 
 This is rare. When you're parked, unlock the phone, tap **Stop**, then **Start**: it carries on where you were. Make sure Car Review was opened from the Home Screen icon rather than a browser tab.
 
 ### A card makes no sense as audio
-Press ⏮ three times quickly while the question is playing (twice undoes your last answer instead). The card is skipped with no grade, tagged `car-review::skip` in Anki, and never comes back to the car. It stays due in Anki as normal.
+Press ⏮ three times quickly while the question is playing (twice goes back to the card before instead). On the screen, tap **Skip (not for audio)**. The card is skipped with no grade, tagged `car-review::skip` in Anki, and never comes back to the car. It stays due in Anki as normal.
 
 ---
 

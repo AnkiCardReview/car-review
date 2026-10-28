@@ -9,10 +9,10 @@
 <title>Car Review</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #1a1d24; --text: #eef0f4; --muted: #9aa1ad;
-    --accent: #4f8cff; --good: #3ccf7a; --again: #ff6b5e; --border: #2a2f3a;
+    --bg: #0d0f13; --panel: #171a21; --panel2: #1f232c; --text: #eef0f4; --muted: #98a0ad;
+    --accent: #4f8cff; --good: #3ccf7a; --again: #ff6b5e; --border: #272c37; --warnc: #f5c451;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
@@ -20,32 +20,33 @@
     padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
   }
   main { max-width: 560px; margin: 0 auto; }
-  h1 { font-size: 26px; margin: 4px 0 8px; }
+  h1 { font-size: 26px; margin: 4px 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  h3 { font-size: 13px; color: var(--muted); margin: 14px 0 4px; font-weight: 600; }
   p { color: var(--muted); margin: 6px 0; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin: 12px 0; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; margin: 12px 0; }
   button {
     font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 14px; width: 100%; margin: 6px 0; cursor: pointer;
+    touch-action: manipulation; user-select: none; -webkit-user-select: none;
   }
-  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 700; font-size: 22px; padding: 20px; }
-  button:disabled { opacity: 0.45; }
+  button:active:not(:disabled) { transform: scale(0.98); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; font-size: 22px; padding: 18px; }
+  button:disabled { opacity: 0.4; }
   .row { display: flex; gap: 10px; }
   .row > * { flex: 1; }
-  .big { font-size: 30px; font-weight: 700; text-align: center; margin: 10px 0 4px; }
   .center { text-align: center; }
-  .stat { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .stat { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
   .stat:last-child { border-bottom: none; }
-  .stat b { font-weight: 600; }
+  .stat span { color: var(--muted); }
+  .stat b { font-weight: 600; text-align: right; }
   input.secs { width: 4.2em; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 2px 6px; }
-  .hint { font-size: 15px; margin: 2px 0 8px; }
-  .ok { color: var(--good); } .warn { color: #f5c451; } .bad { color: var(--again); }
-  progress { width: 100%; height: 12px; }
-  label { display: block; margin: 8px 0 4px; color: var(--muted); }
-  input[type=range] { width: 100%; }
-  #drive .controls button { font-size: 26px; padding: 34px 10px; font-weight: 700; }
-  #drive .controls .again { background: #3a1f1f; border-color: #5a2a2a; }
-  #drive .controls .good { background: #1d3527; border-color: #2a5a3c; }
-  #card-text { color: var(--muted); font-size: 15px; min-height: 1em; }
+  .hint { font-size: 14px; margin: 2px 0 8px; }
+  .ok { color: var(--good); } .warn { color: var(--warnc); } .bad { color: var(--again); }
+  progress { width: 100%; height: 10px; accent-color: var(--accent); }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); }
+  label input[type=checkbox] { width: 18px; height: 18px; vertical-align: -3px; margin-right: 6px; accent-color: var(--accent); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
   .hidden { display: none !important; }
   details summary { cursor: pointer; color: var(--muted); }
   #log { font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
@@ -53,17 +54,50 @@
   ol.steps { color: var(--muted); margin: 6px 0; padding-left: 22px; }
   ol.steps li { margin: 6px 0; }
   .links { text-align: center; font-size: 15px; margin: 14px 0; }
-  .stat { gap: 12px; }
-  .stat span { color: var(--muted); }
-  .stat b { text-align: right; }
+
+  /* Home */
+  .hero { text-align: center; padding: 20px 16px 12px; }
+  .hero .num { font-size: 56px; font-weight: 800; line-height: 1; letter-spacing: -0.02em; }
+  .hero .num-label { color: var(--muted); margin: 4px 0 12px; }
+  .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin: 0 0 10px; }
+  .chip { background: var(--panel2); border-radius: 999px; padding: 4px 10px; font-size: 14px; color: var(--muted); }
+  .chip b { color: var(--text); font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }
+  .tile { background: var(--panel2); border-radius: 12px; padding: 10px 6px; text-align: center; }
+  .tile b { display: block; font-size: 26px; font-weight: 700; }
+  .tile span { font-size: 13px; color: var(--muted); }
+  .session { display: flex; justify-content: space-between; gap: 10px; font-size: 15px; padding: 5px 0; }
+  .session span { color: var(--muted); white-space: nowrap; }
+  .session b { font-weight: 500; text-align: right; }
+
   /* Sync: green = done, nothing to do; blue = tap it; dark blue = working; amber = no signal */
   button.sync { display: block; }
   button.sync small { display: block; font-size: 14px; font-weight: 400; margin-top: 2px; }
-  button.sync.ok { background: #14301f; border-color: #2a5a3c; color: var(--good); }
-  button.sync.need { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
-  button.sync.need small { color: #e3ecff; }
+  button.sync.ok { background: #13281b; border-color: #23492f; color: var(--good); }
+  button.sync.need { background: #1b2c4f; border-color: #2f4f8f; color: #cfe0ff; font-weight: 700; }
+  button.sync.need small { color: #a9c4ff; }
   button.sync.busy { background: #17233d; border-color: #2b4a85; color: #a9c4ff; }
-  button.sync.off { background: #3a2f12; border-color: #6b5420; color: #f5c451; }
+  button.sync.off { background: #3a2f12; border-color: #6b5420; color: var(--warnc); }
+
+  /* Session screen: thumb-sized buttons at the bottom, for the car (parked) or walking */
+  #drive { display: flex; flex-direction: column; min-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - max(24px, env(safe-area-inset-bottom))); }
+  .d-top { display: flex; align-items: center; gap: 10px; }
+  .d-top #d-deck { flex: 1; color: var(--muted); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .d-top button { width: auto; margin: 0; padding: 8px 16px; font-size: 15px; }
+  .bar { height: 6px; background: var(--panel2); border-radius: 3px; margin: 10px 0 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+  #d-count { color: var(--muted); font-size: 14px; text-align: center; }
+  .d-main { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 16px 0; }
+  #d-stage { font-size: 30px; font-weight: 700; text-align: center; margin: 0 0 12px; }
+  #card-text { color: var(--text); font-size: 19px; line-height: 1.5; text-align: center; white-space: pre-wrap; margin: 0; }
+  .d-small button { font-size: 15px; padding: 10px; color: var(--muted); }
+  .controls button { min-height: 132px; font-size: 24px; font-weight: 700; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+  .controls button small { font-size: 15px; font-weight: 400; opacity: 0.7; }
+  .controls.stage-q #d-back { background: var(--panel2); }
+  .controls.stage-q #d-fwd { background: #1b2c4f; border-color: #2f4f8f; }
+  .controls.stage-a #d-back { background: #3a1f1f; border-color: #5a2a2a; color: #ffd3cf; }
+  .controls.stage-a #d-fwd { background: #1d3527; border-color: #2a5a3c; color: #c9f5da; }
+  .d-help { font-size: 13px; text-align: center; margin: 6px 0 0; }
 </style>
 </head>
 <body>
@@ -97,9 +131,9 @@
       <div class="stat"><span>⏭ again</span><b class="ok">Good</b></div>
       <div class="stat"><span>⏮ Previous track</span><b class="bad">Again</b></div>
       <div class="stat"><span>⏮ before the answer</span><b>Repeat the question</b></div>
-      <div class="stat"><span>⏮⏮ quickly</span><b>Undo the last answer</b></div>
-      <div class="stat"><span>⏮⏮⏮ quickly</span><b>Skip: doesn't work as audio</b></div>
-      <p>Works with steering-wheel buttons, AirPods (double-tap = ⏭, triple-tap = ⏮) and most Bluetooth headphones. Nothing plays on its own: after a question it waits as long as you like. After you grade a card the next question starts straight away, and the voice says when a deck is done.</p>
+      <div class="stat"><span>⏮⏮ on a question</span><b>Go back a card (from its question)</b></div>
+      <div class="stat"><span>⏮⏮⏮ on a question</span><b>Skip: doesn't work as audio</b></div>
+      <p>Works with steering-wheel buttons, AirPods (double-tap = ⏭, triple-tap = ⏮), most Bluetooth headphones, and the ⏮ ⏭ controls on the lock screen. Walking or on a treadmill, you can also use the big buttons on the screen. Nothing plays on its own: after a question it waits as long as you like. After you grade a card the next question starts straight away, and the voice says when a deck is done.</p>
     </div>
     <div class="panel">
       <p><b style="color: var(--text)">Each drive</b></p>
@@ -126,26 +160,39 @@
       <p id="add-home-ios">In Safari, tap Share (□↑) ▸ <b>Add to Home Screen</b> ▸ Add. Then open Car Review from your Home Screen: it pairs itself and downloads your cards there. You can close this Safari tab afterwards.</p>
       <p id="add-home-android" class="hidden">In Chrome, tap ⋮ ▸ <b>Add to Home screen</b> (or <b>Install app</b>) ▸ Add. Then open Car Review from your Home Screen.</p>
     </div>
-    <div class="panel">
-      <div class="stat"><span>Cards for today</span><b id="h-due">–</b></div>
-      <div class="stat"><span>Ready offline</span><b id="h-ready">–</b></div>
-      <div class="stat"><span>Car list from</span><b id="h-made">–</b></div>
-      <div class="stat"><span>Done today</span><b id="h-done">–</b></div>
-      <div class="stat"><span>Grades uploaded</span><b id="h-up">–</b></div>
+    <div class="panel hero">
+      <div class="num" id="h-due">–</div>
+      <div class="num-label">cards left today</div>
+      <div class="chips">
+        <span class="chip">Offline <b id="h-ready">–</b></span>
+        <span class="chip">List <b id="h-made">–</b></span>
+        <span class="chip">Answers sent <b id="h-up">–</b></span>
+      </div>
       <progress id="h-progress" class="hidden" max="100" value="0"></progress>
       <p id="h-message"></p>
+      <button id="start" class="primary" disabled>▶ Start</button>
     </div>
     <button id="sync" class="sync need"><span id="sync-label">Sync now</span><small id="sync-sub"></small></button>
-    <button id="start" class="primary" disabled>Start</button>
-    <div id="last-drive" class="panel hidden">
-      <b>Last drive</b>
-      <div id="ld-body"></div>
+    <div id="today" class="panel">
+      <h2>Today</h2>
+      <div class="tiles">
+        <div class="tile"><b id="t-cards">0</b><span>cards</span></div>
+        <div class="tile"><b id="t-mins">0</b><span>minutes</span></div>
+        <div class="tile"><b id="t-right">–</b><span>reviews right</span></div>
+      </div>
+      <div id="t-body"></div>
+      <h3 id="t-sessions-head" class="hidden">Sessions</h3>
+      <div id="t-sessions"></div>
+      <h3 id="t-days-head" class="hidden">Past days</h3>
+      <div id="t-days"></div>
       <p class="hint">More in Anki: Tools ▸ Car Review ▸ Car stats (car vs Anki, mature cards, past drives).</p>
     </div>
     <div class="panel">
+      <h2>Playback</h2>
       <label for="speed">Voice speed: <span id="speed-val">1.2</span>×</label>
       <input id="speed" type="range" min="0.8" max="2.0" step="0.1" value="1.2">
-      <label><input id="show-text" type="checkbox"> Show card text on screen (for when parked)</label>
+      <label><input id="show-text" type="checkbox"> Show card text on screen (parked, or walking)</label>
+      <label><input id="keep-awake" type="checkbox"> Keep the screen on during a session</label>
       <label><input id="auto-answer" type="checkbox"> Play the answer by itself after
         <input id="answer-secs" class="secs" type="number" min="1" max="60" step="1" value="8" inputmode="numeric"> seconds</label>
       <p class="hint">Counts from the end of the question. Press ⏭ or ⏮ sooner and they work as usual. You still grade every card yourself.</p>
@@ -163,20 +210,26 @@
     </details>
   </section>
 
-  <!-- Driving -->
+  <!-- A session: in the car, or on screen -->
   <section id="drive" class="hidden">
-    <div class="center" id="d-deck">&nbsp;</div>
-    <div class="big" id="d-stage">Starting…</div>
-    <div class="center" id="d-count">&nbsp;</div>
-    <p id="card-text" class="center"></p>
-    <div class="row controls">
-      <button id="d-back" class="again">⏮<br>Back</button>
-      <button id="d-fwd" class="good">⏭<br>Forward</button>
+    <div class="d-top"><span id="d-deck">&nbsp;</span><button id="d-stop">Stop</button></div>
+    <div class="bar"><i id="d-bar"></i></div>
+    <div id="d-count">&nbsp;</div>
+    <div class="d-main">
+      <div id="d-stage">Starting…</div>
+      <p id="card-text"></p>
     </div>
-    <p class="center">⏭ answer, then ⏭ Good · ⏮ Again · ⏮ before the answer repeats<br>⏮⏮ undoes the last answer · ⏮⏮⏮ skips a card that doesn't work as audio</p>
-    <button id="d-stop">Stop</button>
+    <div class="row d-small">
+      <button id="d-prev" disabled>↶ Previous card</button>
+      <button id="d-skip" disabled>Skip (not for audio)</button>
+    </div>
+    <div id="d-controls" class="row controls">
+      <button id="d-back"><small>⏮</small><span id="d-back-label">Back</span></button>
+      <button id="d-fwd"><small>⏭</small><span id="d-fwd-label">Forward</span></button>
+    </div>
+    <p class="hint d-help">Car buttons or headphones: ⏭ answer, ⏭ again = Good, ⏮ = Again.<br>On a question: ⏮ repeats it, ⏮⏮ goes back a card, ⏮⏮⏮ skips it.</p>
   </section>
 </main>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>
