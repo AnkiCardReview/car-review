@@ -7,16 +7,21 @@ started by the add-on so it can keep going after Anki closes:
     python -m car_review.helper overnight   # after closing Anki: wait for the next day's list
     python -m car_review.helper status
 
-Audio is cached on this computer by fingerprint, so each clip is only ever made once. The
-phone gets a partial list every 25 cards, so on a big first run it can start with the cards
-that are already ready. Progress is written to status.json for the add-on to show.
+Audio is cached on this computer by fingerprint, so each clip is only ever made once. Only
+clips the phone doesn't have yet are uploaded (the phone lists what it holds in "have"), packed
+into a few bundle files that the phone deletes once it has them. The phone gets a partial list
+every 25 cards, so on a big first run it can start with the cards that are already ready.
+Progress is written to status.json for the add-on to show.
 """
 
 from __future__ import annotations
 
 import argparse
 import ctypes
+import gzip
 import json
+import os
+import secrets
 import sys
 import time
 import traceback
@@ -31,6 +36,9 @@ from .ui import Progress, run_with_window
 from .voice import Voice, available_engine
 
 BATCH = 25
+BUNDLE_BYTES = 1_800_000          # one relay file (the relay's limit is 1.9 MB)
+BUNDLES = HOME / "bundles.json"   # bundle name -> clip names, for bundles the phone hasn't fetched
+CACHE_KEEP_DAYS = 180             # clips no list has used for this long are deleted from the cache
 
 
 def write_status(**fields) -> None:
@@ -123,9 +131,107 @@ class Relay:
         return self.p.decrypt(name, r.content) if r.ok else None
 
 
-def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int, unvoiced: int = 0) -> bytes:
-    """The list the phone downloads: clips named by their relay name, nothing else changed."""
-    out = dict(pack, cards=[], pending=pending, unvoiced=unvoiced)
+def read_json(data: bytes):
+    """A JSON file from the relay, gzipped or not."""
+    return json.loads(gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data)
+
+
+def pack_bundle(clips: list[tuple[str, bytes]]) -> bytes:
+    """Many clips in one file: b"CRB1", a 4-byte header length, the JSON header
+    [[name, size], ...], then the clips back to back."""
+    header = json.dumps([[n, len(d)] for n, d in clips], separators=(",", ":")).encode()
+    return b"CRB1" + len(header).to_bytes(4, "big") + header + b"".join(d for _, d in clips)
+
+
+class Outbox:
+    """Gets clips to the phone: only the ones it doesn't hold yet, in as few uploads as possible.
+    The phone uploads "have" (the clips it holds) when it syncs, and deletes each bundle once its
+    clips are stored, so a bundle still in the mailbox is one the phone hasn't fetched yet. If the
+    phone loses its audio, "have" shrinks and the missing clips are simply sent again."""
+
+    def __init__(self, relay: Relay) -> None:
+        self.relay = relay
+        try:
+            data = relay.get("have")
+            self.have = set(read_json(data)["clips"]) if data else set()
+        except (ValueError, KeyError, OSError):
+            self.have = set()
+        on_relay = relay.names("audio/")
+        try:
+            known = json.loads(BUNDLES.read_text())
+        except (OSError, ValueError):
+            known = {}
+        self.bundles = {b: clips for b, clips in known.items() if b in on_relay}
+        self.coming = {n for clips in self.bundles.values() for n in clips}
+        self.pending: list[tuple[str, bytes]] = []
+        self.pending_names: set[str] = set()
+        self.size = 0
+        self.uploads = 0
+        self._save()
+
+    def reachable(self, name: str) -> bool:
+        return name in self.have or name in self.coming
+
+    def add(self, name: str, path: Path) -> None:
+        if self.reachable(name) or name in self.pending_names:
+            return
+        data = path.read_bytes()
+        if self.pending and self.size + len(data) > BUNDLE_BYTES:
+            self.flush()
+        self.pending.append((name, data))
+        self.pending_names.add(name)
+        self.size += len(data)
+
+    def flush(self) -> None:
+        if not self.pending:
+            return
+        name = "audio/b-" + secrets.token_hex(8)
+        self.relay.put(name, pack_bundle(self.pending))
+        self.bundles[name] = [n for n, _ in self.pending]
+        self.coming |= self.pending_names
+        self.pending, self.pending_names, self.size = [], set(), 0
+        self.uploads += 1
+        self._save()
+
+    def _save(self) -> None:
+        HOME.mkdir(parents=True, exist_ok=True)
+        BUNDLES.write_text(json.dumps(self.bundles))
+
+
+def keep_fresh(path: Path) -> None:
+    """Mark a cached clip as still in use (the cache forgets clips unused for CACHE_KEEP_DAYS)."""
+    try:
+        if time.time() - path.stat().st_mtime > 86400:
+            os.utime(path)
+    except OSError:
+        pass
+
+
+def prune_cache() -> None:
+    """At most once a day: delete cached clips no list has used for CACHE_KEEP_DAYS days. A card
+    that comes back after that is voiced again."""
+    stamp = HOME / "cache-pruned"
+    if stamp.exists() and time.time() - stamp.stat().st_mtime < 86400:
+        return
+    cutoff = time.time() - CACHE_KEEP_DAYS * 86400
+    removed = 0
+    for f in CACHE.glob("*.mp3"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+        except OSError:
+            pass
+    stamp.touch()
+    if removed:
+        log(f"cache: removed {removed} clips unused for {CACHE_KEEP_DAYS} days")
+
+
+def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int, unvoiced: int = 0,
+               bundles: list[str] | None = None) -> bytes:
+    """The list the phone downloads (gzipped): clips named by their relay name, plus the bundles
+    to fetch them from."""
+    out = dict(pack, cards=[], pending=pending, unvoiced=unvoiced, bundles=bundles or [])
     # Cards not on the phone yet still count as siblings for the phone's fallback: [note, day].
     sent = {c["cid"] for c in cards}
     out["held_back"] = [[c["nid"], c["due_day"]] for c in pack["cards"] if c["cid"] not in sent]
@@ -138,7 +244,7 @@ def phone_list(pack: dict, cards: list[dict], pairing: Pairing, pending: int, un
         rename = lambda a: dict(a, audio=pairing.audio_name(a["audio"]))  # noqa: E731
         out["announce"] = {"blocks": [rename(a) for a in pack["announce"]["blocks"]],
                            "end": rename(pack["announce"]["end"])}
-    return json.dumps(out, separators=(",", ":")).encode()
+    return gzip.compress(json.dumps(out, separators=(",", ":")).encode(), mtime=0)
 
 
 def announce_clips(pack: dict) -> list[dict]:
@@ -285,7 +391,18 @@ def send(pack_path: Path, progress: Progress) -> None:
     made = 0
     voicing = False
     try:
-        on_relay = relay.names("audio/")
+        outbox = Outbox(relay)
+        names: dict[str, str] = {}
+
+        def relay_name(fp: str) -> str:
+            if fp not in names:
+                names[fp] = pairing.audio_name(fp)
+            return names[fp]
+
+        def put_list(pack: dict, ready: list[dict], **counts) -> None:
+            outbox.flush()  # the list only names clips the phone can already get
+            relay.put("list", phone_list(pack, ready, pairing, bundles=sorted(outbox.bundles), **counts))
+
         while True:
             loaded_at = pack_path.stat().st_mtime
             pack = json.loads(pack_path.read_text(encoding="utf-8"))
@@ -294,16 +411,15 @@ def send(pack_path: Path, progress: Progress) -> None:
             voicing = voicing or pack.get("voice_missing", True)
             progress.title = "Car Review: making audio and sending" if voicing else "Car Review: sending to your car"
 
-            # The few spoken cues first: made when voicing, uploaded whenever they're ready.
+            # The few spoken cues first: made when voicing, sent whenever they're ready.
             for cue in announce_clips(pack):
                 path = CACHE / f"{cue['audio']}.mp3"
                 if not path.exists() and voicing and on_charger():
                     path.write_bytes(voice.mp3(cue["text"]))
                     made += 1
-                name = pairing.audio_name(cue["audio"])
-                if path.exists() and name not in on_relay:
-                    relay.put(name, path.read_bytes())
-                    on_relay.add(name)
+                if path.exists():
+                    keep_fresh(path)
+                    outbox.add(relay_name(cue["audio"]), path)
 
             def clips(card: dict) -> tuple:
                 return (card["q_audio"], card["question"]), (card["a_audio"], card["answer"])
@@ -311,10 +427,15 @@ def send(pack_path: Path, progress: Progress) -> None:
             def cached(card: dict) -> bool:
                 return all((CACHE / f"{fp}.mp3").exists() for fp, _ in clips(card))
 
+            def reachable(card: dict) -> bool:
+                return all(outbox.reachable(relay_name(fp)) for fp, _ in clips(card))
+
+            for c in cards:
+                for fp, _ in clips(c):
+                    keep_fresh(CACHE / f"{fp}.mp3")
             # Cards the phone can already play go in every list sent from here on, so a partial
             # list or a Stop never leaves the phone with fewer cards than it had.
-            ready_idx = {i for i, c in enumerate(cards)
-                         if cached(c) and all(pairing.audio_name(fp) in on_relay for fp, _ in clips(c))}
+            ready_idx = {i for i, c in enumerate(cards) if cached(c) and reachable(c)}
             to_voice = {i for i, c in enumerate(cards) if not cached(c)} if voicing else set()
             to_upload = {i for i, c in enumerate(cards) if i not in ready_idx and cached(c)}
             # Voice the nearest due days first; the phone list keeps Anki's play order.
@@ -326,7 +447,7 @@ def send(pack_path: Path, progress: Progress) -> None:
             if to_voice and ready_idx:
                 # Voicing takes a while: the phone gets this list's ready cards straight away.
                 ready = [cards[j] for j in sorted(ready_idx)]
-                relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - len(ready)))
+                put_list(pack, ready, pending=len(cards) - len(ready))
                 write_status(state="sending", ready=len(ready), total=len(cards), made=made,
                              elapsed=int(time.time() - started), made_at=pack["made_at"])
             newer = False
@@ -344,26 +465,25 @@ def send(pack_path: Path, progress: Progress) -> None:
                             break
                         path.write_bytes(voice.mp3(text))
                         made += 1
-                    name = pairing.audio_name(fp)
-                    if name not in on_relay:
-                        relay.put(name, path.read_bytes())
-                        on_relay.add(name)
+                    outbox.add(relay_name(fp), path)
                 else:
                     ready_idx.add(i)
                 if i not in to_voice and to_voice:
                     continue
                 work_done += 1
                 progress.step(work_done, work_total)
-                if work_done % BATCH == 0 and work_done < work_total:
+                if work_done % BATCH == 0 and work_done < work_total and to_voice:
                     ready = [cards[j] for j in sorted(ready_idx)]
-                    relay.put("list", phone_list(pack, ready, pairing, pending=len(cards) - len(ready)))
+                    put_list(pack, ready, pending=len(cards) - len(ready))
                     write_status(state="sending", ready=len(ready), total=len(cards), made=made,
                                  elapsed=int(time.time() - started), made_at=pack["made_at"])
             if newer:
                 continue  # start over with the newer list; finished clips are reused
             ready = [cards[j] for j in sorted(ready_idx)]
             unvoiced = len(cards) - len(ready)
-            relay.put("list", phone_list(pack, ready, pairing, pending=0, unvoiced=unvoiced))
+            put_list(pack, ready, pending=0, unvoiced=unvoiced)
+            log(f"sent: {len(ready)} cards, {outbox.uploads} audio bundles uploaded, "
+                f"{len(outbox.have)} clips already on the phone")
             LAST_SENT.write_text(json.dumps({"anki_today": pack["anki_today"], "made_at": pack["made_at"],
                                              "sent": int(time.time())}))
             break
@@ -383,6 +503,10 @@ def send(pack_path: Path, progress: Progress) -> None:
     finally:
         keep_awake(False)
         LOCK.unlink(missing_ok=True)
+        try:
+            prune_cache()
+        except OSError:
+            pass
 
 
 def prepare(pack_path: Path, progress: Progress) -> None:

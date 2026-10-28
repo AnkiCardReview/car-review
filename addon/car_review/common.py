@@ -25,7 +25,8 @@ PACK = HOME / "outbox" / "pack.json"  # the latest car list, for the helper to s
 VENV = HOME / "venv"                 # the helper's own Python (made by voice setup)
 VOICE_DIR = HOME / "voice"           # the voice model files
 
-RELAY = "https://car-review-relay.ankicardreview.workers.dev/v1"
+# CAR_REVIEW_RELAY points tests at a local `wrangler dev` relay.
+RELAY = os.environ.get("CAR_REVIEW_RELAY") or "https://car-review-relay.ankicardreview.workers.dev/v1"
 APP_URL = "https://ankicardreview.github.io/car-review/"
 
 

@@ -2,9 +2,18 @@
 // Car Review phone app: downloads the encrypted car list and audio from the relay, plays cards
 // with the steering-wheel (next/previous track) buttons, and keeps your grades on the phone,
 // uploading them (encrypted) for the Anki add-on. Grades are not applied to Anki by this app.
+//
+// Like Anki, it syncs when you tap Sync, plus three times by itself: when it opens on a new
+// Anki day (or with answers still to send), after Stop, and when a drive reaches the end. A sync
+// downloads the list only if it changed, fetches new audio in a few bundles and deletes them
+// from the mailbox, and tells the laptop which clips this phone holds, so nothing is sent twice.
 (() => {
-  const RELAY = 'https://car-review-relay.ankicardreview.workers.dev/v1';
-  const APP_VERSION = 11; // also in index.html (app.js?v=); sent with grades so problems can be traced
+  // A local test relay can be set on a localhost page only (tools: wrangler dev).
+  const RELAY = (location.hostname === 'localhost' && localStorage.getItem('relayUrl'))
+    || 'https://car-review-relay.ankicardreview.workers.dev/v1';
+  const APP_VERSION = 12; // also in index.html (app.js?v=); sent with grades so problems can be traced
+  const AUDIO_CAP = 400e6;     // bytes of audio kept on the phone; the oldest-used clips go first
+  const AUDIO_KEEP_DAYS = 60;  // clips no list has used for this long are removed
   const $ = (id) => document.getElementById(id);
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -90,17 +99,40 @@
     if (!r.ok) throw new Error(`relay said ${r.status}`);
     return decrypt(name, await r.arrayBuffer());
   }
+  // The list, unless it's unchanged since `since` (then the relay answers 204 with no body).
+  async function relayGetIfChanged(name, since) {
+    const q = since ? `?since=${encodeURIComponent(since)}` : '';
+    const r = await fetch(`${RELAY}/${keys.box}/${name}${q}`, { cache: 'no-store', signal: timeout() });
+    if (r.status === 404) return { missing: true };
+    if (r.status === 204) return { unchanged: true };
+    if (!r.ok) throw new Error(`relay said ${r.status}`);
+    return { data: await decrypt(name, await r.arrayBuffer()), stamp: r.headers.get('X-Updated') };
+  }
   async function relayPut(name, bytes) {
     const r = await fetch(`${RELAY}/${keys.box}/${name}`, {
       method: 'PUT', headers: { 'X-Write-Key': keys.write }, body: await encrypt(name, bytes), signal: timeout(),
     });
     if (!r.ok) throw new Error(`relay said ${r.status}`);
   }
+  async function relayDelete(name) {
+    const r = await fetch(`${RELAY}/${keys.box}/${name}`, { method: 'DELETE', headers: { 'X-Write-Key': keys.write }, signal: timeout() });
+    if (!r.ok && r.status !== 404) throw new Error(`relay said ${r.status}`);
+  }
+  const pipe = (bytes, stream) => new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer();
+  async function unzip(buffer) {
+    const b = new Uint8Array(buffer);
+    return b[0] === 0x1f && b[1] === 0x8b ? pipe(b, new DecompressionStream('gzip')) : buffer;
+  }
+  async function zip(bytes) {
+    return window.CompressionStream ? new Uint8Array(await pipe(bytes, new CompressionStream('gzip'))) : bytes;
+  }
 
   // ---------- App state ----------
   let list = null;           // the car list from the add-on
   let state = null;          // today's progress on this phone
   let audioReady = new Set();// clip names stored on the phone
+  let clipMeta = {};         // clip name -> [bytes, the last Anki day a list used it]
+  let synced = { at: 0, day: -1, stamp: null, cleared: false }; // the last successful sync
   // The log survives closing the app, so after a drive it shows what happened (Settings ▸ Log).
   const logLines = (() => { try { return JSON.parse(localStorage.getItem('log') || '[]'); } catch { return []; } })();
   function log(text) {
@@ -225,7 +257,6 @@
     state.grades.length = h.grades;
     if (state.uploaded > h.grades) { state.uploaded = h.grades; state.resend = true; } // replace the uploaded file
     saveState();
-    uploadSoon();
     log(`undid the answer for ${h.card.cid}`);
     return h.card;
   }
@@ -264,7 +295,6 @@
     state.grades.push({ cid: card.cid, rating, at: t, ms: Math.min(60000, t - shownAt), day: state.day, list: list.made_at });
     if (driving && lastDrive) { lastDrive.end = t; saveLastDrive(); }
     saveState();
-    uploadSoon();
     log(`${rating === 1 ? 'Again' : rating === 3 ? 'Good' : 'Skip'} ${card.cid}${delay ? ` (back in ${Math.round(delay / 60)} min)` : ''}`);
   }
 
@@ -274,102 +304,235 @@
     state.done[card.cid] = true;
     state.grades.push({ cid: card.cid, rating: 0, at: now(), ms: 0, day: state.day, list: list.made_at, skip: 'not audio friendly' });
     saveState();
-    uploadSoon();
     log(`skipped ${card.cid} (marked not audio friendly)`);
   }
 
   // ---------- Uploading grades ----------
-  let uploadTimer = null;
-  function uploadSoon() {
-    clearTimeout(uploadTimer);
-    uploadTimer = setTimeout(uploadGrades, 3000);
-  }
+  // Only at Stop, at the end of a drive, and in a sync: never after each answer, never on a timer.
+  const unsent = () => (state ? Math.max(0, state.grades.length - state.uploaded) + (state.carried || []).length : 0);
+  const gradesWaiting = () => !!state && (unsent() > 0 || !!state.resend);
   let uploading = false;
   async function uploadGrades() {
-    if (!keys || !state || uploading) return;
-    const all = [...(state.carried || []), ...state.grades];
-    if (!state.resend && (!all.length || state.uploaded >= state.grades.length && !(state.carried || []).length)) { showHome(); return; }
-    // No signal: grades stay on the phone, and go up when the 'online' event fires.
-    if (navigator.onLine === false) { showHome(); return; }
+    if (!keys || !state || uploading || !gradesWaiting()) return true;
+    // No signal: grades stay on the phone, and go up when the 'online' event fires or at the next sync.
+    if (navigator.onLine === false) { offline = true; renderSync(); return false; }
     uploading = true;
     try {
       const sent = state.grades.length;
+      const all = [...(state.carried || []), ...state.grades];
       const body = enc.encode(JSON.stringify({ phone: state.phone, day: state.day, app: APP_VERSION, grades: all, timing: state.timing || [] }));
       await relayPut(`grades/${state.day}-${state.phone}`, body);
       state.uploaded = sent;
       state.carried = [];
       state.resend = false;
+      offline = false;
       saveState();
+      log(`${sent} answers uploaded`);
+      return true;
     } catch (err) {
-      log(`upload waiting for signal (${err.message})`);
-      uploadTimer = setTimeout(uploadGrades, 30000);
+      log(`answers wait on the phone (${err.message})`);
+      offline = true;
+      return false;
     } finally {
       uploading = false;
+      renderSync();
+      showHome();
     }
-    showHome();
   }
 
-  // ---------- Downloading the list and audio ----------
-  async function refresh() {
-    if (!keys) return;
-    message('Checking for a new list…');
+  // ---------- Sync: the list and audio down, answers up ----------
+  let syncing = false;
+  let offline = false;   // the last attempt couldn't reach the relay
+  let syncNote = '';     // progress shown under the Sync button while it runs
+  function saveSync() { return DB.set('kv', 'sync', synced).catch(() => {}); }
+  // Why a sync is needed now ('' when it isn't). On a new Anki day, or with answers to send, the
+  // app syncs by itself when it opens; otherwise only when you tap Sync.
+  function syncReason() {
+    if (!list) return 'Get your cards';
+    if (gradesWaiting()) return `${unsent() || 'Changed'} answers to send`;
+    if (synced.cleared) return 'Audio cleared: download it again';
+    if (synced.day !== ankiDay()) return 'New Anki day';
+    if (list.pending) return `${list.pending} more cards are being prepared`;
+    return '';
+  }
+  async function runSync(why) {
+    if (!keys || syncing || driving) return;
+    syncing = true;
+    syncNote = 'Checking…';
+    renderSync();
     try {
-      const raw = await relayGet('list');
-      if (!raw) {
+      if (!(await uploadGrades())) throw new Error('no connection');
+      const got = await relayGetIfChanged('list', list ? synced.stamp : null);
+      if (got.missing) {
         message('Waiting for your first car list. On your computer, close Anki (or use Tools ▸ Car Review ▸ Send to Car). '
           + 'The first time, your computer also makes the audio, which can take a while; cards appear here as they are ready.');
-        showHome();
-        return;
-      }
-      const fresh = JSON.parse(dec.decode(raw));
-      if (!list || fresh.made_at !== list.made_at || fresh.cards.length !== list.cards.length) {
-        list = fresh;
+      } else if (got.data) {
+        list = JSON.parse(dec.decode(await unzip(got.data)));
+        synced.stamp = got.stamp;
         await DB.set('kv', 'list', list);
         log(`new list: ${list.cards.length} cards${list.pending ? `, ${list.pending} more still being prepared` : ''}`);
       }
-      await loadState();
-      await downloadAudio();
-      await uploadGrades();
-      message(list.pending ? `Your computer is still preparing ${list.pending} more cards. Check again later.`
-        : list.unvoiced ? `${list.unvoiced} more cards are waiting for audio on your computer. Plug it in and close Anki, or use Anki ▸ Tools ▸ Car Review ▸ Prepare audio.`
-        : !todaysCards().length ? 'Nothing left to review today in your car decks. 🎉'
-        : '');
+      if (list) {
+        await loadState();
+        if (Array.isArray(list.bundles)) await fetchBundles(); else await downloadClips();
+        await tidyAudio();
+        await sendHave();
+        await clearFetched();
+      }
+      offline = false;
+      synced = { ...synced, at: now(), day: list ? ankiDay() : -1, cleared: false };
+      await saveSync();
+      log(`synced (${why})${got.unchanged ? ': list unchanged' : ''}`);
+      if (list) {
+        message(list.pending ? `Your computer is still preparing ${list.pending} more cards. Sync again later.`
+          : list.unvoiced ? `${list.unvoiced} more cards are waiting for audio on your computer. Plug it in and close Anki, or use Anki ▸ Tools ▸ Car Review ▸ Prepare audio.`
+          : !todaysCards().length ? 'Nothing left to review today in your car decks. 🎉'
+          : '');
+      }
     } catch (err) {
-      log(`offline or relay error: ${err.message}`);
-      message(list ? 'Offline: using the cards already on this phone. Grades upload by themselves when you have signal.'
-        : 'No internet connection, and no cards on this phone yet. Connect to Wi-Fi and tap “Check for a new list”.');
+      offline = true;
+      log(`sync stopped: ${err.message}`);
+      message(list ? 'No connection: using the cards already on this phone. Answers send by themselves when you have signal.'
+        : 'No internet connection, and no cards on this phone yet. Connect to Wi-Fi and tap Sync.');
+    } finally {
+      syncing = false;
+      syncNote = '';
+      $('h-progress').classList.add('hidden');
+      renderSync();
+      showHome();
     }
-    showHome();
+  }
+  // Only when it's needed: a new Anki day, answers to send, no list yet, or audio cleared.
+  function syncIfNeeded(why) { if (syncReason()) runSync(why); }
+
+  function renderSync() {
+    const b = $('sync');
+    if (!b) return;
+    let cls, label, sub;
+    const reason = syncReason();
+    if (syncing) {
+      cls = 'busy'; label = 'Syncing…'; sub = syncNote;
+    } else if (offline && gradesWaiting()) {
+      cls = 'off'; label = 'Answers saved on this phone'; sub = "They send by themselves when you're online";
+    } else if (offline) {
+      cls = 'off'; label = 'No connection'; sub = 'Using the cards on this phone · tap to try again';
+    } else if (reason) {
+      cls = 'need'; label = 'Sync now'; sub = reason;
+    } else {
+      cls = 'ok';
+      label = `✓ Synced · ${new Date(synced.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+      sub = 'Up to date: nothing to do';
+    }
+    b.className = `sync ${cls}`;
+    $('sync-label').textContent = label;
+    $('sync-sub').textContent = sub;
+  }
+  function tapSync() {
+    // Just synced and nothing has changed: say so instead of asking the relay again.
+    if (!syncReason() && !offline && now() - synced.at < 60000) {
+      $('sync-sub').textContent = 'Already up to date';
+      return;
+    }
+    runSync('tapped');
   }
 
   const cueNames = () => (list.announce ? [...list.announce.blocks, list.announce.end].map((a) => a.audio) : []);
-  async function downloadAudio() {
-    const needed = [...new Set([...list.cards.flatMap((c) => [c.q_audio, c.a_audio]), ...cueNames()])].filter((n) => !audioReady.has(n));
-    if (!needed.length) return;
+  const listClips = () => new Set([...list.cards.flatMap((c) => [c.q_audio, c.a_audio]), ...cueNames()]);
+  function keepClip(name, blob) {
+    audioReady.add(name);
+    clipMeta[name] = [blob.size, ankiDay()];
+    return DB.set('audio', name, blob);
+  }
+  // A bundle is many clips in one file: "CRB1", a 4-byte header length, the JSON header
+  // [[name, size], ...], then the clips back to back (helper.py pack_bundle).
+  async function storeBundle(buffer) {
+    const b = new Uint8Array(buffer);
+    if (String.fromCharCode(...b.slice(0, 4)) !== 'CRB1') throw new Error('not an audio bundle');
+    const len = new DataView(buffer).getUint32(4);
+    const header = JSON.parse(dec.decode(b.slice(8, 8 + len)));
+    let at = 8 + len;
+    for (const [name, size] of header) {
+      await keepClip(name, new Blob([b.slice(at, at + size)], { type: 'audio/mpeg' }));
+      at += size;
+    }
+    return header.length;
+  }
+  // Bundles listed in the list that this phone hasn't stored yet. Each is deleted from the
+  // mailbox once "have" (below) tells the laptop its clips are here.
+  async function fetchBundles() {
+    const fetched = new Set((await DB.get('kv', 'fetched')) || []);
+    const todo = list.bundles.filter((name) => !fetched.has(name));
+    if (!todo.length) return;
     const bar = $('h-progress');
     bar.classList.remove('hidden');
     let done = 0;
-    const worker = async () => {
-      while (needed.length) {
-        const name = needed.shift();
-        const data = await relayGet(name);
-        if (data) {
-          await DB.set('audio', name, new Blob([data], { type: 'audio/mpeg' }));
-          audioReady.add(name);
-        }
-        done += 1;
-        bar.value = Math.round(100 * done / (done + needed.length));
-        message(`Downloading audio… ${done} clips`);
-      }
-    };
-    await Promise.all([worker(), worker(), worker(), worker()]);
-    bar.classList.add('hidden');
-    // Remove clips no longer in the list, to free space.
-    const keep = new Set([...list.cards.flatMap((c) => [c.q_audio, c.a_audio]), ...cueNames()]);
-    for (const name of await DB.keys('audio')) {
-      if (!keep.has(name)) { await DB.del('audio', name); audioReady.delete(name); }
+    let clips = 0;
+    for (const name of todo) {
+      const data = await relayGet(name);
+      if (data) clips += await storeBundle(data);
+      fetched.add(name);
+      await DB.set('kv', 'fetched', [...fetched]);
+      done += 1;
+      bar.value = Math.round((100 * done) / todo.length);
+      syncNote = `Downloading audio… ${done} of ${todo.length}`;
+      renderSync();
+    }
+    log(`audio: ${clips} clips from ${todo.length} bundles`);
+  }
+  // Lists from an add-on older than bundles name every clip as its own file.
+  async function downloadClips() {
+    const needed = [...listClips()].filter((n) => !audioReady.has(n));
+    let done = 0;
+    for (const name of needed) {
+      const data = await relayGet(name);
+      if (data) await keepClip(name, new Blob([data], { type: 'audio/mpeg' }));
+      done += 1;
+      syncNote = `Downloading audio… ${done} of ${needed.length}`;
+      renderSync();
     }
   }
+  // Clips stay on the phone after their card is played, so a card that comes back doesn't need
+  // downloading again. Clips no list has used for AUDIO_KEEP_DAYS go, and the oldest-used go
+  // first when they pass AUDIO_CAP.
+  async function tidyAudio() {
+    const day = ankiDay();
+    const inList = listClips();
+    for (const name of audioReady) {
+      if (!clipMeta[name]) {
+        const blob = await DB.get('audio', name).catch(() => null);
+        clipMeta[name] = [blob ? blob.size : 30000, day];
+      }
+      if (inList.has(name)) clipMeta[name][1] = day;
+    }
+    let total = Object.values(clipMeta).reduce((sum, [size]) => sum + size, 0);
+    const old = Object.entries(clipMeta).filter(([name]) => !inList.has(name)).sort((a, b) => a[1][1] - b[1][1]);
+    let removed = 0;
+    for (const [name, [size, last]] of old) {
+      if (total <= AUDIO_CAP && last >= day - AUDIO_KEEP_DAYS) break;
+      await DB.del('audio', name);
+      audioReady.delete(name);
+      delete clipMeta[name];
+      total -= size;
+      removed += 1;
+    }
+    for (const name of Object.keys(clipMeta)) if (!audioReady.has(name)) delete clipMeta[name];
+    await DB.set('kv', 'clipMeta', clipMeta);
+    if (removed) log(`audio: removed ${removed} old clips`);
+  }
+  // Tell the laptop which clips are on this phone, so it only sends the missing ones.
+  async function sendHave() {
+    const names = [...audioReady].sort();
+    const sig = `${names.length}:${names[0] || ''}:${names[names.length - 1] || ''}:${Object.values(clipMeta).reduce((s, [b]) => s + b, 0)}`;
+    if ((await DB.get('kv', 'haveSent')) === sig) return;
+    await relayPut('have', await zip(enc.encode(JSON.stringify({ clips: names, app: APP_VERSION }))));
+    await DB.set('kv', 'haveSent', sig);
+  }
+  async function clearFetched() {
+    const fetched = (await DB.get('kv', 'fetched')) || [];
+    for (const name of fetched) await relayDelete(name);
+    await DB.set('kv', 'fetched', []);
+  }
+  const audioBytes = () => Object.values(clipMeta).reduce((sum, [size]) => sum + size, 0);
 
   // ---------- Home screen ----------
   function message(text) { $('h-message').textContent = text; }
@@ -395,6 +558,8 @@
     $('h-up').innerHTML = !state || !total ? '–' : state.uploaded >= total ? '<span class="ok">✓ all</span>' : `<span class="warn">${total - state.uploaded} waiting</span>`;
     $('start').disabled = !list || ready === 0;
     showLastDrive();
+    renderSync();
+    $('h-storage').textContent = audioReady.size ? `${Math.round(audioBytes() / 1e6)} MB (${audioReady.size} clips)` : 'none';
     if (list && !listIsToday()) {
       message("Today's list isn't here yet. Your laptop makes it at 4:30 am if it's on and plugged in, "
         + 'or when you open or close Anki. '
@@ -689,6 +854,7 @@
       $('card-text').textContent = '';
       const end = list.announce ? cue(list.announce.end) : null;
       if (first && end) playClip(end); else playSilence();
+      if (first) uploadGrades(); // the drive is over: send the answers now if there's signal
     }
   }
 
@@ -792,8 +958,8 @@
     player.pause();
     memory.clear();
     show('home');
-    uploadGrades();
     showHome();
+    runSync('after Stop'); // sends the answers; the list check is a tiny "unchanged" reply
   }
 
   // ---------- Startup ----------
@@ -812,7 +978,10 @@
     const m = location.hash.match(/pair=([A-Za-z0-9_-]{40,})/);
     if (m) {
       const old = await DB.get('kv', 'pairing');
-      if (old && old !== m[1]) { await DB.clear('audio'); await DB.del('kv', 'list'); await DB.del('kv', 'state'); }
+      if (old && old !== m[1]) {
+        await DB.clear('audio');
+        for (const key of ['list', 'state', 'sync', 'clipMeta', 'fetched', 'haveSent']) await DB.del('kv', key);
+      }
       await DB.set('kv', 'pairing', m[1]);
       if (!old || old !== m[1]) log('paired with this laptop');
     }
@@ -826,14 +995,28 @@
     keys = await makeKeys(code);
     list = (await DB.get('kv', 'list')) || null;
     audioReady = new Set(await DB.keys('audio'));
+    clipMeta = (await DB.get('kv', 'clipMeta')) || {};
+    synced = { ...synced, ...((await DB.get('kv', 'sync')) || {}) };
     await loadState();
     showHome();
     log(`app version ${APP_VERSION} started`);
-    refresh();
+    syncIfNeeded('opened');
   }
 
   $('start').addEventListener('click', startDrive);
-  $('refresh').addEventListener('click', refresh);
+  $('sync').addEventListener('click', tapSync);
+  $('clear-audio').addEventListener('click', async () => {
+    if (!confirm(`Delete the audio stored on this phone (${Math.round(audioBytes() / 1e6)} MB)? `
+      + 'Your cards and answers stay. The audio for your cards downloads again at your next sync, ideally on Wi-Fi.')) return;
+    await DB.clear('audio');
+    for (const key of ['clipMeta', 'haveSent']) await DB.del('kv', key);
+    audioReady = new Set();
+    clipMeta = {};
+    synced.cleared = true;
+    await saveSync();
+    log('audio cleared from this phone');
+    showHome();
+  });
   $('intro-done').addEventListener('click', () => { localStorage.setItem('introDone', '1'); showHome(); window.scrollTo(0, 0); });
   $('show-intro').addEventListener('click', () => { localStorage.removeItem('introDone'); showHome(); window.scrollTo(0, 0); });
   $('d-fwd').addEventListener('click', forward);
@@ -859,15 +1042,16 @@
   $('unpair').addEventListener('click', async () => {
     if (!confirm('Unpair this phone? Its downloaded cards and audio are deleted. You can pair again by scanning the QR code in Anki.')) return;
     await DB.clear('audio'); await DB.clear('kv');
-    keys = null; list = null; state = null; audioReady = new Set();
+    keys = null; list = null; state = null; audioReady = new Set(); clipMeta = {};
+    synced = { at: 0, day: -1, stamp: null, cleared: false };
     show('unpaired');
   });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
-    if (!driving) { refresh(); return; }
+    if (!driving) { syncIfNeeded('opened'); return; }
     if (player.paused) player.play().catch(playFailed);
   });
-  window.addEventListener('online', () => uploadSoon());
+  window.addEventListener('online', () => { offline = false; if (gradesWaiting() && !driving) uploadGrades(); else renderSync(); });
 
   // Lets a desktop browser simulate the buttons and the clock while testing.
   window.carReviewTest = {

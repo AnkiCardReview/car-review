@@ -56,6 +56,14 @@
   .stat { gap: 12px; }
   .stat span { color: var(--muted); }
   .stat b { text-align: right; }
+  /* Sync: green = done, nothing to do; blue = tap it; dark blue = working; amber = no signal */
+  button.sync { display: block; }
+  button.sync small { display: block; font-size: 14px; font-weight: 400; margin-top: 2px; }
+  button.sync.ok { background: #14301f; border-color: #2a5a3c; color: var(--good); }
+  button.sync.need { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  button.sync.need small { color: #e3ecff; }
+  button.sync.busy { background: #17233d; border-color: #2b4a85; color: #a9c4ff; }
+  button.sync.off { background: #3a2f12; border-color: #6b5420; color: #f5c451; }
 </style>
 </head>
 <body>
@@ -127,8 +135,8 @@
       <progress id="h-progress" class="hidden" max="100" value="0"></progress>
       <p id="h-message"></p>
     </div>
+    <button id="sync" class="sync need"><span id="sync-label">Sync now</span><small id="sync-sub"></small></button>
     <button id="start" class="primary" disabled>Start</button>
-    <button id="refresh">Check for a new list</button>
     <div id="last-drive" class="panel hidden">
       <b>Last drive</b>
       <div id="ld-body"></div>
@@ -146,6 +154,9 @@
       <summary>More</summary>
       <button id="show-intro">How the buttons work</button>
       <p class="links"><a href="https://github.com/AnkiCardReview/car-review/blob/main/help/troubleshooting.md">Help &amp; troubleshooting</a> · <a href="https://github.com/AnkiCardReview/car-review/blob/main/PRIVACY.md">Privacy</a> · <a href="https://github.com/AnkiCardReview/car-review/blob/main/TERMS.md">Terms</a></p>
+      <div class="stat"><span>Audio on this phone</span><b id="h-storage">–</b></div>
+      <p class="hint">Kept so cards that come back don't download again. Old clips are removed by themselves (over 400 MB, or unused for 60 days).</p>
+      <button id="clear-audio">Clear audio from this phone</button>
       <button id="clear-today">Reset today's progress on this phone</button>
       <button id="unpair">Unpair this phone</button>
       <div id="log"></div>
@@ -166,6 +177,6 @@
     <button id="d-stop">Stop</button>
   </section>
 </main>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

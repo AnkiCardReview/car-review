@@ -4,9 +4,10 @@ Automatic:
 - First run: the setup wizard (settings.py) opens by itself, once.
 - When Anki opens (after its opening sync): if there are car grades, show what they'd do,
   with an Apply button. Then remind you if upcoming car cards still need audio.
-- While Anki is open (every 10 minutes, after a sync, and when you finish reviewing): car grades
-  are picked up the same way, and if your cards changed, a fresh list goes to the phone, so
-  the phone never replays cards you've already done on the laptop.
+- While Anki is open, like Anki's own sync, nothing runs on a timer: after each Anki sync car
+  grades are picked up the same way and a fresh list goes to the phone if your cards changed;
+  after a review session on the laptop a fresh list goes out, so the phone never replays cards
+  you've already done here.
 - When Anki closes: send the car list (today plus the next few days) to your phone. This is
   quick: only cards that already have audio are sent. If "auto_voice" is on and the laptop is
   plugged in, missing audio is made too, after Anki has closed. On the charger in the evening,
@@ -294,8 +295,10 @@ def send_if_changed() -> None:
 
 
 def on_state_change(new_state: str, old_state: str) -> None:
+    # After reviewing on the laptop, a fresh list so the car doesn't play those cards again.
+    # Car answers are only picked up when Anki syncs, opens or closes (like Anki's own sync).
     if old_state == "review" and new_state != "review":
-        keep_in_step_soon()
+        QTimer.singleShot(5_000, send_if_changed)
 
 
 def startup_check() -> None:
@@ -546,10 +549,8 @@ def setup() -> None:
     gui_hooks.sync_did_finish.append(on_sync_finished)
     gui_hooks.profile_will_close.append(on_close)
     gui_hooks.state_did_change.append(on_state_change)
-    # Every 10 minutes while Anki is open: car grades in, fresh list out (quiet when nothing changed).
-    timer = QTimer(mw)
-    timer.timeout.connect(keep_in_step)
-    timer.start(10 * 60_000)
+    # No timer: like Anki itself, Car Review syncs when Anki syncs, opens and closes, so a laptop
+    # left open all day makes no requests in between.
 
 
 setup()

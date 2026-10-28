@@ -42,7 +42,7 @@ Press ⏮ three times quickly while the question is playing (twice undoes your l
 Your computer hasn't sent anything yet. On the computer:
 1. Make sure the setup is complete: **Tools ▸ Car Review ▸ Settings**. The **Done** step lists anything missing (decks or voice).
 2. Close Anki, or use **Tools ▸ Car Review ▸ Send to Car**.
-3. On the phone, tap **Check for a new list**.
+3. On the phone, tap **Sync**.
 
 ### "N more cards are waiting for audio on your computer" / no audio yet
 Audio is made on your computer, and only while it's plugged in. The first time, it takes roughly 10 seconds per card on a typical laptop.

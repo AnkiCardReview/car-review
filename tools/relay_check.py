@@ -6,6 +6,7 @@ decrypt, and confirm wrong keys and oversized files are refused. Deletes its box
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,8 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addon"))
 from car_review.pairing import Pairing  # noqa: E402
 
-RELAY = "https://car-review-relay.ankicardreview.workers.dev/v1"
+# RELAY_URL=http://localhost:8787/v1 checks a local `wrangler dev` instead.
+RELAY = os.environ.get("RELAY_URL", "https://car-review-relay.ankicardreview.workers.dev/v1")
 
 
 def main() -> None:
@@ -37,6 +39,11 @@ def main() -> None:
     r = requests.get(f"{box}/list", timeout=30)
     check("download matches upload", r.status_code == 200 and r.content == blob)
     check("downloaded file decrypts to the original", p.decrypt("list", r.content) == secret_text)
+    stamp = r.headers.get("X-Updated", "")
+    r = requests.get(f"{box}/list", params={"since": stamp}, timeout=30)
+    check(f"unchanged file answers 204 with no body ({r.status_code})", r.status_code == 204 and not r.content)
+    r = requests.get(f"{box}/list", params={"since": "1"}, timeout=30)
+    check("changed file is sent again", r.status_code == 200 and r.content == blob)
 
     try:
         p.decrypt("grades/x", r.content)
@@ -46,6 +53,15 @@ def main() -> None:
 
     r = requests.get(box, timeout=30)
     check("listing shows the file", r.ok and [f["name"] for f in r.json()["files"]] == ["list"])
+
+    for name in ("audio/a1", "grades/g1", "grades/g2"):
+        requests.put(f"{box}/{name}", data=b"x" * 10, headers=auth, timeout=30)
+    r = requests.get(box, params={"prefix": "grades/"}, timeout=30)
+    check("prefix listing shows only those files",
+          r.ok and [f["name"] for f in r.json()["files"]] == ["grades/g1", "grades/g2"])
+    r = requests.delete(f"{box}/grades/g1", headers=auth, timeout=30)
+    r = requests.get(box, params={"prefix": "grades/"}, timeout=30)
+    check("single file deleted", r.ok and [f["name"] for f in r.json()["files"]] == ["grades/g2"])
 
     r = requests.put(f"{box}/list", data=b"x", headers={"X-Write-Key": Pairing.new().write_key}, timeout=30)
     check(f"write with the wrong key refused ({r.status_code})", r.status_code == 403)

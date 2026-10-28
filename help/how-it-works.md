@@ -20,9 +20,14 @@
 |---|---|---|
 | Leaving | Close Anki | Anki syncs, then Car Review sends the cards due today (and the next few days) to the mailbox |
 | Early morning | Nothing | Half an hour after Anki's day starts (4:30 am by default), Car Review sends that day's exact list, without Anki open. You can turn this off in Settings (see below) |
-| Before driving | Open Car Review on the phone | It downloads the new cards and audio |
-| Driving | Tap Start, then use the steering-wheel buttons | Each answer is saved on the phone right away and uploaded when there's signal |
+| Before driving | Open Car Review on the phone | On a new Anki day it syncs by itself: the new list, and audio only for cards it doesn't have yet. The **Sync** button turns green (✓ Synced) when there's nothing left to do |
+| Driving | Tap Start, then use the steering-wheel buttons | Each answer is saved on the phone right away. Nothing is uploaded during the drive |
+| Parked | Tap Stop | The answers upload (or as soon as there's signal, or when you next open the app) |
 | Arriving | Open Anki | It syncs, downloads your car answers, checks them, and (after you click Apply) records them through Anki's own scheduler |
+
+**Syncing works like Anki's.** Nothing checks in on a timer. The computer syncs with the mailbox when Anki syncs, opens or closes, and after you review on it. The phone syncs when you tap **Sync**, by itself when it opens on a new Anki day or with answers still to send, and after Stop. The Sync button's color says whether there's anything to do: green ✓ Synced (nothing; tapping again only says "Already up to date"), blue Sync now (with the reason underneath), amber (no signal; answers are kept and sent later).
+
+**Why it uses so little data.** The phone keeps each card's audio after playing it, so a card that comes back later isn't downloaded again; it tells the computer which clips it has, and the computer sends only the missing ones, many clips to a file. The phone then deletes those files from the mailbox. The list itself is compressed and only downloaded when it changed.
 
 **What runs on your computer when Anki is closed.** Car Review never runs in secret; each of these shows in Settings and can be turned off:
 - **Making audio and sending**: after you close Anki, with a small progress window you can pause or stop.
@@ -32,7 +37,7 @@
 
 **The one rule:** after a drive, open Anki on the computer before reviewing on AnkiMobile or AnkiDroid. If you forget, nothing breaks: any card you've already reviewed elsewhere is skipped when the car answers are applied, so nothing is ever counted twice.
 
-Data use is under 1 MB a day once a card's audio has been downloaded.
+Data use is under 1 MB a day once a card's audio is on the phone: about 60 KB per new card, and nothing for cards the phone already has.
 
 ## Your privacy, simply
 
