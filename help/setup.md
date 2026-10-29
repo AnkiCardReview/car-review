@@ -86,7 +86,7 @@ Press **Finish**.
 | "All done" or waiting for a learning card | | Go back a card |
 | The answer | **Good** (the next question starts) | **Again** (the next question starts) |
 
-The second ⏮ counts for a little over a second after the first, so a car that passes presses on a beat late still works. Nothing plays on its own: after a question, it waits silently as long as you like. Cards you answer **Again** come back after your learning step, just as in Anki.
+Press at a steady pace, about once a second: many cars pass on at most one button press per second, so faster presses can be lost. Each ⏮ counts toward a double or triple for about 2 seconds after the one before. Nothing plays on its own: after a question, it waits silently as long as you like. Cards you answer **Again** come back after your learning step, just as in Anki.
 
 > **Safety:** set up and tap Start before you move. While driving, use only the steering-wheel buttons and never look at or touch the phone. If a card needs thought, let it wait.
 

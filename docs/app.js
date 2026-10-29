@@ -11,7 +11,7 @@
   // A local test relay can be set on a localhost page only (tools: wrangler dev).
   const RELAY = (location.hostname === 'localhost' && localStorage.getItem('relayUrl'))
     || 'https://car-review-relay.ankicardreview.workers.dev/v1';
-  const APP_VERSION = 13; // also in index.html (app.js?v=); sent with grades so problems can be traced
+  const APP_VERSION = 14; // also in index.html (app.js?v=); sent with grades so problems can be traced
   const AUDIO_CAP = 400e6;     // bytes of audio kept on the phone; the oldest-used clips go first
   const AUDIO_KEEP_DAYS = 60;  // clips no list has used for this long are removed
   const $ = (id) => document.getElementById(id);
@@ -253,16 +253,33 @@
     history.push({ card, learning: own ? { ...own } : undefined, done: !!state.done[card.cid], grades: state.grades.length });
     if (history.length > 50) history.shift();
   }
+  // Returns what it took back, so redoUndone can put it back.
   function undoLast() {
     const h = history.pop();
     if (!h) return null;
+    const cid = h.card.cid;
+    const undone = {
+      h, learning: state.learning[cid] ? { ...state.learning[cid] } : undefined, done: !!state.done[cid],
+      grades: state.grades.slice(h.grades), uploaded: state.uploaded, resend: !!state.resend,
+    };
     if (h.learning) state.learning[h.card.cid] = h.learning; else delete state.learning[h.card.cid];
     if (h.done) state.done[h.card.cid] = true; else delete state.done[h.card.cid];
     state.grades.length = h.grades;
     if (state.uploaded > h.grades) { state.uploaded = h.grades; state.resend = true; } // replace the uploaded file
     saveState();
     log(`undid the answer for ${h.card.cid}`);
-    return h.card;
+    return undone;
+  }
+  function redoUndone(undone) {
+    const cid = undone.h.card.cid;
+    if (undone.learning) state.learning[cid] = undone.learning; else delete state.learning[cid];
+    if (undone.done) state.done[cid] = true; else delete state.done[cid];
+    state.grades.push(...undone.grades);
+    state.uploaded = undone.uploaded;
+    state.resend = undone.resend;
+    history.push(undone.h);
+    saveState();
+    log(`put back the answer for ${cid}`);
   }
 
   function answer(card, rating) {
@@ -826,7 +843,6 @@
   let stage = 'idle';   // question | answer | waiting | done
   let shownAt = 0;
   let waitTimer = null;
-  let backTimer = null;
   let playedThisDrive = 0;
   let lastBlock = null; // the furthest deck reached this drive, for the "<deck> done" cue
 
@@ -932,32 +948,40 @@
     }
   }
 
-  // ⏮ on a question: once = hear it again (straight away), twice = go back to the card before,
-  // from its question (⏭ then plays its answer), three times = skip this card as not
-  // audio-friendly. Car buttons can reach the phone a beat late, so the second press counts for
-  // BACK_WINDOW ms after the first, and going back waits BACK_CONFIRM ms for a third.
+  // ⏮ on a question: once = hear it again, twice = go back to the card before, from its question
+  // (⏭ then plays its answer), three times = skip the card you were on as not audio-friendly.
+  // Every press acts at once. Car buttons can reach the phone well over a second apart (1.0 to
+  // 1.9 s on the first car tested, while deliberate repeats were 2.8 s or more apart), so each
+  // press counts toward the same run for BACK_WINDOW ms after the one before.
   // After the last card (or while waiting for one), a single ⏮ goes back a card.
-  const BACK_WINDOW = 1200;
-  const BACK_CONFIRM = 900;
-  let backRun = { n: 0, at: 0, card: null };
+  const BACK_WINDOW = 2300;
+  let backRun = { n: 0, at: 0, card: null, undone: null };
   function back() {
     markPress('b');
-    clearTimeout(backTimer);
     if (stage === 'answer') { backRun.n = 0; grade(1); return; }
     if (stage === 'waiting' || stage === 'done') { backRun.n = 0; previousCard(); return; }
     if (stage !== 'question') return;
     const t = performance.now();
-    const more = backRun.n > 0 && backRun.card === current && t - backRun.at < (backRun.n === 1 ? BACK_WINDOW : BACK_CONFIRM);
-    backRun = { n: more ? backRun.n + 1 : 1, at: t, card: current };
-    if (backRun.n === 1) { repeatQuestion(); return; }
-    if (backRun.n === 2) {
-      playSilence();
-      setScreen('Going back a card…', counts());
-      backTimer = setTimeout(() => { backRun.n = 0; previousCard(); }, BACK_CONFIRM);
-      return;
+    const n = backRun.n > 0 && backRun.card === current && t - backRun.at < BACK_WINDOW ? backRun.n + 1 : 1;
+    if (n === 1) {
+      backRun = { n, at: t, card: current, undone: null };
+      repeatQuestion();
+    } else if (n === 2) {
+      const from = current;
+      const undone = previousCard();
+      backRun = { n, at: t, card: current, undone: undone && { ...undone, from } };
+    } else {
+      // The third press: put back the answer the second one undid, and skip the card you were on.
+      const { undone } = backRun;
+      backRun = { n: 0, at: 0, card: null, undone: null };
+      if (undone) {
+        redoUndone(undone);
+        playedThisDrive += 1;
+        current = undone.from;
+        stage = 'question';
+      }
+      skipCurrent();
     }
-    backRun.n = 0;
-    skipCurrent();
   }
   function repeatQuestion() {
     if (stage !== 'question') return;
@@ -967,12 +991,12 @@
   }
   // Undo the last answer of this session and play that card again from its question.
   function previousCard() {
-    clearTimeout(backTimer);
-    const card = undoLast();
-    if (!card) {
+    const undone = undoLast();
+    if (!undone) {
       if (stage === 'question') { setScreen('No earlier card this session', counts()); playQuestion(current); }
-      return;
+      return null;
     }
+    const card = undone.h.card;
     playedThisDrive = Math.max(0, playedThisDrive - 1);
     clearTimeout(waitTimer);
     current = card;
@@ -983,6 +1007,7 @@
     setScreen('Back one card · ⏭ answer', counts());
     saveDay();
     playQuestion(current);
+    return undone;
   }
   function skipCurrent() {
     if (stage !== 'question' || !current) return;
@@ -1051,7 +1076,6 @@
     stage = 'idle';
     session = null;
     clearTimeout(waitTimer);
-    clearTimeout(backTimer);
     clearInterval(heartbeat);
     clearTimeout(revealTimer);
     keepScreenOn(false);
@@ -1123,7 +1147,7 @@
   $('d-fwd').addEventListener('click', pressed('screen', forward));
   // On the screen, the left button does what it says: hear the question again, Again, or go back.
   $('d-back').addEventListener('click', pressed('screen', () => {
-    if (stage === 'question') { markPress('b'); clearTimeout(backTimer); backRun.n = 0; repeatQuestion(); } else back();
+    if (stage === 'question') { markPress('b'); backRun.n = 0; repeatQuestion(); } else back();
   }));
   $('d-prev').addEventListener('click', pressed('screen', () => { markPress('b'); previousCard(); }));
   $('d-skip').addEventListener('click', pressed('screen', () => {
